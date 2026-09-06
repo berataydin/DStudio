@@ -1,7 +1,7 @@
 // Actual loopback HTTP transport; no model or external service.
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { completeText, jsonFetch } from '../support/real_harness.mjs';
+import { completeText, completeTextStream, jsonFetch } from '../support/real_harness.mjs';
 
 let received, closed;
 const server = http.createServer((req, res) => {
@@ -29,6 +29,9 @@ try {
   // A caller signal must not mask an explicit independent transport deadline.
   const alive = new AbortController();
   await assert.rejects(jsonFetch(base, '/stalled', { timeoutMs: 30, signal: alive.signal }), error => /timeout|aborted/i.test(error.name + error.message));
+  assert.equal(alive.signal.aborted, false);
+  await assert.rejects(completeTextStream(base, [{ role: 'user', content: 'Stalled stream' }],
+    { timeoutMs: 30, signal: alive.signal }), error => /timeout|abort/i.test(error.name + error.message));
   assert.equal(alive.signal.aborted, false);
   console.log('research_http_cancel: aborted inference closes real HTTP request; independent timeout retained');
 } finally {

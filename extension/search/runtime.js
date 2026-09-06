@@ -518,29 +518,60 @@ Choose however many stages, branches, and topics the subject actually warrants; 
       }
 
       function webPipelineError(e, label) {
+        if (e?.name === 'AbortError' || e?.name === 'TimeoutError') return e;
         if (isAbortLikeError(e)) {
-          return new Error(`${label} was cancelled.`);
+          return new DOMException(`${label} was cancelled.`, 'AbortError');
         }
         if (e instanceof Error) return e;
         const raw = String(e || '').trim();
         return new Error(raw || `${label} failed.`);
       }
 
-      async function completeWebPipelineText(payload, _timeoutMs, label, signal) {
+      async function completeWebPipelineText(payload, timeoutMs, label, signal) {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        // A slow SSD-backed model is legitimate; an orphaned request is not.
+        // Keep a generous hard ceiling, separate from the run's soft admission
+        // deadline. Abort the actual transport, not just its progress display.
+        const controller = new AbortController();
+        const duration = Number.isFinite(timeoutMs) && timeoutMs > 0
+          ? Math.min(timeoutMs, 15 * 60 * 1000) : 15 * 60 * 1000;
+        const cancel = () => controller.abort(new DOMException('Aborted', 'AbortError'));
+        signal?.addEventListener('abort', cancel, { once: true });
+        let timer;
+        const stopped = new Promise((_, reject) => {
+          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+          timer = setTimeout(() => controller.abort(new DOMException(`${label} exceeded its request deadline.`, 'TimeoutError')), duration);
+        });
         try {
-          // Local models can legitimately need several minutes to prefill a
-          // large research context. Web/Roadmap work therefore has no
-          // wall-clock deadline; the request ends when the model does or when
-          // the user manually stops the operation.
-          const result = await Api.completeText(payload, signal);
+          const result = await Promise.race([Api.completeText(payload, controller.signal), stopped]);
           // A completed HTTP reply cannot authorize publishing an old run's
           // evidence after Stop, even if its adapter ignored the abort signal.
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
           return result;
         } catch (e) {
           throw webPipelineError(e, label);
+        } finally {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', cancel);
         }
+      }
+
+      function researchRunLimits(mode) {
+        // Admission ceilings, not quality targets or promised completion times.
+        // Stop admitting new discovery/extraction work at the soft deadline;
+        // retain completed evidence and reserve the final bounded writer call.
+        return mode === 'research'
+          ? { queries: 18, reads: 24, actions: 12, sources: 256, durationMs: 30 * 60 * 1000 }
+          : { queries: 6, reads: 8, actions: 0, sources: 96, durationMs: 10 * 60 * 1000 };
+      }
+
+      function researchAdmissionOpen(state) {
+        if (state.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (Number.isFinite(state.deadline) && performance.now() >= state.deadline) {
+          state.stopReason = 'The research time budget ended; evidence collection is incomplete.';
+          return false;
+        }
+        return true;
       }
 
       function parseWebPipelineJson(text, label) {
@@ -1245,6 +1276,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         if (state.purpose === 'roadmap' && readSources.length > 1 && !readSources.some(source => source.webImage)) {
           const steps = [];
           for (let offset = 0; offset < readSources.length; offset += 4) {
+            if (!researchAdmissionOpen(state)) break;
             const batch = readSources.slice(offset, offset + 4);
             const step = {
               label: 'Extract facts · roadmap evidence',
@@ -1269,6 +1301,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
               step.detail = `Batch incomplete; extracting each source separately: ${batchError?.message || batchError}`;
               emitSearchTrace(onTrace, [...state.trace, ...steps]);
               for (const source of batch) {
+                if (!researchAdmissionOpen(state)) break;
                 const fallback = { label: 'Extract facts fallback', detail: source.url, state: 'active' };
                 steps.push(fallback);
                 emitSearchTrace(onTrace, [...state.trace, ...steps]);
@@ -1297,6 +1330,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         }
         const steps = [];
         for (const source of readSources) {
+          if (!researchAdmissionOpen(state)) break;
           const key = sourceKey(source.url);
           const step = { label: 'Extract facts', detail: source.url, state: 'active' };
           steps.push(step);
@@ -1804,14 +1838,16 @@ Choose however many stages, branches, and topics the subject actually warrants; 
 
       function writeFinalFromFacts(query, state, options = {}) {
         const sources = [...state.byUrl.values()].filter((s) => s.read || s.explicit);
-        if (options.research && options.report) return buildFinalResearchContext(query, sources, state.facts, options.report, options.synthesisError || '');
-        return buildFactsContext(query, sources, state.facts, options);
+        const limitation = state.stopReason ? `Research limitation: ${state.stopReason}\nDo not present this evidence as a complete investigation.\n\n` : '';
+        if (options.research && options.report) return limitation + buildFinalResearchContext(query, sources, state.facts, options.report, options.synthesisError || '');
+        return limitation + buildFactsContext(query, sources, state.facts, options);
       }
 
       function addSourceToState(state, source) {
         if (!source?.url) return null;
         const key = sourceKey(source.url);
         if (!state.byUrl.has(key)) {
+          if (state.byUrl.size >= (state.limits?.sources ?? Infinity)) return null;
           const sourceId = source.sourceId || `S${state.byUrl.size + 1}`;
           const profile = sourceAdapterProfile(source, state.question || '');
           state.byUrl.set(key, {
@@ -1855,9 +1891,14 @@ Choose however many stages, branches, and topics the subject actually warrants; 
       }
 
       async function executeWebSearchQueries(state, queries, onTrace) {
+        const remaining = Math.max(0, (state.limits?.queries ?? Infinity) - state.searched.size);
+        queries = uniqueStrings(queries, Infinity).filter(query => !state.searched.has(query.toLowerCase()));
+        if (queries.length > remaining) state.limitReason = 'The search-query budget was reached.';
+        queries = queries.slice(0, remaining);
         const steps = queries.map((query) => ({ label: 'Search', detail: query, state: 'pending' }));
         emitSearchTrace(onTrace, [...state.trace, ...steps]);
         for (let i = 0; i < queries.length; i++) {
+          if (!researchAdmissionOpen(state)) break;
           const query = queries[i];
           if (state.searched.has(query.toLowerCase())) {
             steps[i].state = 'done';
@@ -1872,10 +1913,11 @@ Choose however many stages, branches, and topics the subject actually warrants; 
               preferFallback: !!state.preferFallback,
               cdpOnly: !!state.cdpOnly,
             });
+            if (state.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
             if (!res?.ok) throw new Error(res?.error || 'search failed');
             if (res.fallback && !state.cdpOnly) state.preferFallback = true;
             let added = 0;
-            const resultLimit = state.purpose === 'roadmap' ? 8 : Infinity;
+            const resultLimit = state.purpose === 'roadmap' ? 8 : 12;
             for (const source of (res.sources || []).slice(0, resultLimit)) {
               if (addSourceToState(state, {
                 ...source,
@@ -1901,6 +1943,11 @@ Choose however many stages, branches, and topics the subject actually warrants; 
       }
 
       async function readUrlsIntoState(state, urls, deadline, onTrace) {
+        if (!researchAdmissionOpen(state)) return [];
+        const remaining = Math.max(0, (state.limits?.reads ?? Infinity) - state.readUrls.size);
+        urls = uniqueStrings(urls || [], Infinity).filter(url => !state.readUrls.has(sourceKey(url)));
+        if (urls.length > remaining) state.limitReason = 'The page-read budget was reached; selected pages remain unread.';
+        urls = urls.slice(0, remaining);
         const sources = [];
         for (const url of urls || []) {
           const existing = addSourceToState(state, {
@@ -1987,7 +2034,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         emitSearchTrace(onTrace, state.trace);
 
         const selected = explicitUrls.map((url) => state.byUrl.get(sourceKey(url))).filter(Boolean);
-        const deadline = Number.POSITIVE_INFINITY;
+        const deadline = performance.now() + researchRunLimits('search').durationMs;
         const { readSteps, readSources } = await readResearchSources(
           selected, state.readUrls, deadline, onTrace, state.trace, state.question, signal,
         );
@@ -2027,7 +2074,8 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         const throwIfCancelled = () => {
           if (job?.cancelled || signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         };
-        const deadline = Number.POSITIVE_INFINITY;
+        const limits = researchRunLimits(mode);
+        const deadline = performance.now() + limits.durationMs;
         let visionStatus = null;
         if (settings.chatBackend !== 'deepseek' && typeof Engine.status === 'function') {
           try { visionStatus = await Engine.status(); } catch { /* Text still works; never guess capability. */ }
@@ -2039,6 +2087,9 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         const state = {
           mode,
           purpose,
+          limits,
+          deadline,
+          actions: 0,
           question: userText,
           signal,
           visualBudget: { remaining: visionEnabled ? 3 : 0, enabled: visionEnabled },
@@ -2099,7 +2150,16 @@ Choose however many stages, branches, and topics the subject actually warrants; 
           emitSearchTrace(onTrace, state.trace);
         }
 
-        while (mode === 'research' && state.judge.decision !== 'enough' && performance.now() < deadline) {
+        while (mode === 'research' && state.judge.decision !== 'enough' && researchAdmissionOpen(state)) {
+          if (state.actions >= limits.actions) {
+            state.stopReason = 'The research-action budget ended before evidence was sufficient.';
+            break;
+          }
+          if (state.readUrls.size >= limits.reads) {
+            state.stopReason = 'The page-read budget ended before evidence was sufficient.';
+            break;
+          }
+          state.actions++;
           throwIfCancelled();
           const progressBefore = {
             reads: [...state.byUrl.values()].filter((source) => source?.read && !source.unusable).length,
@@ -2149,8 +2209,13 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             break;
           }
         }
-        if (performance.now() >= deadline) state.stopReason = 'research stopped by time limit';
+        researchAdmissionOpen(state);
+        if (state.judge.decision !== 'enough') state.stopReason ||= state.limitReason || 'Read evidence did not resolve every requested detail.';
         if (!state.facts.length) state.stopReason ||= 'no extracted facts';
+        if (state.stopReason) state.judge = { ...state.judge, decision: 'incomplete',
+          gaps: uniqueStrings([...(state.judge.gaps || []), state.stopReason], Infinity) };
+        if (state.stopReason) state.trace = [...state.trace,
+          { label: 'Research incomplete', detail: state.stopReason, state: 'error' }];
         state.trace = [...state.trace, { label: 'Write', detail: state.facts.length ? 'Grounded facts ready for final answer.' : 'No grounded facts were extracted.', state: state.facts.length ? 'done' : 'error' }];
         emitSearchTrace(onTrace, state.trace);
         const sources = [...state.byUrl.values()].filter((s) => s.read || s.explicit);
@@ -2184,6 +2249,8 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             emitSearchTrace(onTrace, state.trace);
           }
         }
+        if (state.stopReason && synthesis.report)
+          synthesis.report += `\n\nResearch limitation: ${state.stopReason}`;
         return {
           plan: state.classification,
           sources,
@@ -2202,6 +2269,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
               }),
           judge: state.judge,
           stopReason: state.stopReason,
+          budget: { limits, queries: state.searched.size, reads: state.readUrls.size, actions: state.actions },
         };
       }
 

@@ -316,6 +316,27 @@ test loads a model; the archive test does not download its fixture.
 See [Design systems and regression coverage](../docs/DESIGN_SYSTEMS.md).
 Successful previews and prompt-string checks are not counted as model quality.
 
+Actual-product comparison helpers live under `tests/support/product_*`;
+`tests/live/product_quality_pilot.mjs --run` requires the pinned OpenWork and
+OpenDesign checkouts and their installed runtime tools. It starts the actual
+servers, not a generic standalone OpenCode task, and routes their inference to
+one shared local model. Run it sequentially. Independent code/document and
+Chromium workflow audits reopen the saved outputs. The artifact-serving and
+semantic grader regressions are model-free:
+
+```sh
+node tests/unit/product_artifact_server_test.mjs
+node tests/unit/product_design_grader_test.mjs
+```
+
+`make test-search-evidence` also covers whole-loop work budgets and actual HTTP
+stream cancellation. Its model/page responses are simulated. In contrast,
+`node tests/live/research_pipeline_benchmark.mjs --run` loads real weights and
+executes full Search/Research against public websites, including the final
+answer. Each invocation creates a fresh ignored receipt directory and preserves
+failures. Review every answer against the fixed primary-source expectations
+before publishing a quality score; completion and citations alone are not a pass.
+
 See the [real-run report](../docs/ENGINE_ACCEPTANCE.md) for actual failures as well
 as successes. Qwen native generation throughput is reported separately from
 DStudio Chat latency and from the small cross-engine acceptance battery.

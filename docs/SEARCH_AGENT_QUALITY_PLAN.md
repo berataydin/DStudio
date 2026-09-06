@@ -9,10 +9,10 @@ completion of the project below.
 | --- | --- | --- |
 | Better Search and Deep Research | Matched questions, read sources and independently checked answers before/after | Real page/evidence development comparison: 3/8 before, 8/8 after; complete pipeline evaluation pending |
 | Vision models can inspect web images | Real page pixels reach the selected native vision model; text-only models receive an honest limitation | Actual Vision-Exp run reads two graphics correctly; bounded browser and capability gates pass, broader model/visual coverage pending |
-| Quality gates without excessive latency | Behavioral regressions plus real-model correctness and per-phase latency, with failures retained | Evidence/Stop gates pass; overall latency budgets and live evaluation pending |
-| Improve Agent and Cowork; compare OpenWork | Pinned actual OpenWork runtime, matching model/tasks, independently reopened files and results | Actual server compiled/API setup exercised; pilot exposed remote workspace regression, fixed with real-tool gate; matched rerun/audit pending |
-| Compare Design with OpenDesign | Pinned actual OpenDesign runtime, matching briefs/model, rendered artifacts and working-control audit | Actual daemon compiled, project API exercised; real-model pilot/audit in progress, no product ranking claimed |
-| Publish clear README examples | Exact prompts, real generated website screenshots, Matplotlib charts and public measurements | Search evidence chart/data/report prepared; actual competitor-generated website screenshots still pending |
+| Quality gates without excessive latency | Behavioral regressions plus real-model correctness and per-phase latency, with failures retained | Bounded query/read/action admission, model cancellation/deadlines and honest partial-result regressions pass; complete live evaluation pending |
+| Improve Agent and Cowork; compare OpenWork | Pinned actual OpenWork runtime, matching model/tasks, independently reopened files and results | Remote workspace regression fixed; corrected paired replay passes both code/document tasks for DStudio and OpenWork; original failures retained |
+| Compare Design with OpenDesign | Pinned actual OpenDesign runtime, matching briefs/model, rendered artifacts and working-control audit | One paired real brief completed/audited: DStudio passes the specified controls; OpenDesign hits the task deadline and its partial file has runtime JavaScript errors. No general ranking claimed |
+| Publish clear README examples | Exact prompts, real generated website screenshots, Matplotlib charts and public measurements | Search evidence publication complete; actual product chart/data, exact prompts and both unchanged website screenshots prepared and verified |
 
 ## Initial observations
 
@@ -21,8 +21,8 @@ completion of the project below.
 - Baseline page extraction chose a leading excerpt, truncated it again for
   storage, then gives the evidence extractor only the first 5,200 characters.
   Relevant later sections can disappear before the model sees them.
-- Research model helpers ignore their timeout argument; the current pipeline
-  deadline is infinite. Investigate bounded cancellation and control before
+- At baseline, research model helpers ignored their timeout argument and the
+  pipeline deadline was infinite. Investigate bounded cancellation and control before
   adding more concurrent work or arbitrary shorter model timeouts.
 - The legacy report prompt required 10,000 words and contained a fixed 2025 date.
   Report depth should follow the user's question and available evidence.
@@ -127,10 +127,51 @@ fixed main and Laguna binaries each pass 3/3. A full Agent build attempted on
 Qwen3.6 is unsupported and fails at existing edit 070; no passing Agent claim
 is made for Qwen, whose advertised integration remains Chat/native. The separate
 four-source browser-helper gate passes. Model replies in the workspace gate are simulated;
-the failing live pilot is retained and a corrected live rerun is still needed.
+the failing live pilot is retained. The corrected real-model Agent/Cowork replay
+now passes both tasks for DStudio and OpenWork, including independent reopening
+and execution of the actual files.
 
-Next: measure matched complete research cases before selecting overall latency
-budgets; independently audit and rerun the actual product pilot. Keep
+## Bounded full-pipeline work and current comparison
+
+Search now admits at most 6 unique queries, 8 page attempts and 96 candidate
+sources; Research admits 18 queries, 24 page attempts, 12 follow-up actions and
+256 candidates. The source cap includes adapters, not only search responses.
+The soft admission deadlines are 10/30 minutes; an already running operation
+and the final bounded writer may finish afterward. Model calls honor their
+requested deadline with a hard 15-minute ceiling. These deliberately generous
+ceilings accommodate slow local models; they are not a latency improvement claim.
+
+The behavioral gate executes the actual orchestrator with simulated evidence:
+continuously novel but irrelevant pages cannot keep resetting the stall counter
+forever; successive batches share budgets; cancellation rejects late search
+results; deadlines abort the transport. Completed facts survive exhaustion,
+the sufficiency state becomes incomplete, and the limitation remains in both
+the returned report and model context even if the writer omits it.
+
+The full public-web evaluation runner is
+`tests/live/research_pipeline_benchmark.mjs`: real discovery, page reads, model
+classification/extraction/judgment/synthesis and final answer, alternating
+before/after. Its fixed questions cover an HTTP standard, versioned Python
+behavior, planetary science and accessibility requirements. Expected answers
+come from independently inspected RFC/Python/NASA/W3C sources, not a model
+self-grade. Results remain provisional until all answers are reviewed.
+
+The completed initial product pilot exposed test-harness defects as well as
+production defects. OpenWork was initially queried before its managed proxy
+was ready; those zero-inference attempts are setup failures, not a score against
+OpenWork. The first browser audit also required an uppercase brand, placed the
+demo disclosure earlier than the prompt required, and incorrectly routed the
+second product's artifact to 404. All original receipts remain; behavioral
+regressions cover corrected brand/disclosure semantics and real HTTP routing
+for both products. Unchanged artifacts were re-audited equally. DStudio's
+website passes the specified workflow; OpenDesign's partial saved page fits
+all three widths but its Continue flow fails with actual JavaScript exceptions.
+Both aesthetic merits and limitations must be judged from the real screenshots,
+not those pass/fail counts. The Agent/Cowork corrected replay is separate from
+the original failed attempts.
+
+Next: review the matched complete research cases, including whether the new
+admission ceilings preserve the requested evidence coverage. Keep
 Agent/Cowork improvements, both competitor comparisons and README
 prompt/screenshots as separate required deliverables after those foundations.
 All published benchmark charts must use Matplotlib, with reviewed public

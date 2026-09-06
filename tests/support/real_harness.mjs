@@ -197,7 +197,8 @@ export async function completeTextStream(baseUrl, messages, opts = {}) {
     body.reasoning_effort = opts.thinkLevel === 'max' ? 'max' : 'high';
   }
   const timeoutMs = opts.timeoutMs ?? Number(process.env.DSTUDIO_REAL_CALL_TIMEOUT_MS || 0);
-  const signal = opts.signal || (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined);
+  const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+  const signal = opts.signal && timeoutSignal ? AbortSignal.any([opts.signal, timeoutSignal]) : opts.signal || timeoutSignal;
   return await new Promise((resolve, reject) => {
     const u = new URL(`${baseUrl}/v1/chat/completions`);
     const payload = JSON.stringify(body);
@@ -525,6 +526,8 @@ export function createWebPipeline(baseUrl) {
     'isAbortLikeError',
     'webPipelineError',
     'completeWebPipelineText',
+    'researchRunLimits',
+    'researchAdmissionOpen',
     'parseWebPipelineJson',
     'completeWebPipelineObject',
     'researchPurposeValue',
