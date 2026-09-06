@@ -23,6 +23,7 @@
 - [What DStudio can do](#what-you-can-do)
 - [Modes](#modes)
 - [Check PDF sources](#check-pdf-sources)
+- [Image presets: Low, Medium, High and MAX](#image-presets)
 - [Prompt lookup: real-engine results](#prompt-lookup-real-engine-results)
 - [Native Agent or Task Graph](#native-agent-or-task-graph)
 - [50 diverse tasks with Pi and OpenCode](#50-diverse-task-comparison-dstudio-pi-and-opencode)
@@ -243,9 +244,51 @@ Long PDFs, scans and uncertain text layers keep the existing planner: the active
 
 </div>
 
-Ask for an image naturally in any language. DeepSeek Vision-Exp or GLM 5.3 interprets the request and any source pixels itself, then emits an explicit `generate` or `edit` directive. DStudio dispatches `generate` directly to Ideogram 4 FP8 with its official 48-step Quality profile, and `edit` directly to the full, non-distilled HunyuanImage-3.0-Instruct model. Text-only models cannot issue source-dependent edits. Hunyuan uses NF4 so it fits the 96 GB reference Mac while critical layers and compute remain BF16; it runs `think_recaption` and 50 diffusion steps through Tencent's official eager DeepSeek MoE implementation with no routed-token dropping or custom numerical forward.
+Ask for an image naturally in any language. DeepSeek Vision-Exp or GLM 5.3 interprets the request and any source pixels itself, then emits an explicit `generate` or `edit` directive. DStudio dispatches `generate` directly to Ideogram 4 FP8 with your selected image preset, and `edit` directly to the full, non-distilled HunyuanImage-3.0-Instruct model. Text-only models cannot issue source-dependent edits. Hunyuan uses NF4 so it fits the 96 GB reference Mac while critical layers and compute remain BF16; it runs `think_recaption` and 50 diffusion steps through Tencent's official eager DeepSeek MoE implementation with no routed-token dropping or custom numerical forward.
 
-The reply gets a placeholder immediately while DStudio reports real load, reasoning, sampling and decode phases. Quality is fixed at Ideogram Quality-48 or Hunyuan full-50: there is no Turbo, distilled or smaller-model fallback. One kernel-owned lock serializes Ideogram, Hunyuan and H3, while the media-memory lease temporarily evacuates a resident chat/Design model when required. Generated files stay local and are attached to the conversation for later edits.
+The reply gets a placeholder immediately while DStudio reports real load, reasoning, sampling and decode phases. Presets are explicit choices, never an automatic downgrade when memory is tight. Editing stays at Hunyuan full-50. One kernel-owned lock serializes Ideogram, Hunyuan and H3, while the media-memory lease temporarily evacuates a resident chat/Design model when required. Generated files stay local and are attached to the conversation for later edits.
+
+### Image presets
+
+Choose **Settings → Vision → Image preset**. This controls new Chat images,
+generated video opening frames and newly started Design sessions. Changing it
+does not restart a model or alter a render already in progress.
+
+| Preset | Intended use | Generation steps | Landscape image (16:9) |
+| --- | --- | ---: | --- |
+| Low | Quick drafts and composition checks | 12 | 1024 × 576 |
+| Medium | A balance of detail and waiting time | 20 | 1024 × 576 |
+| High | More refinement at the same size | 48 | 1024 × 576 |
+| MAX | A larger, natively generated image | 48 | 2048 × 1152 |
+
+**MAX preserves DStudio's previous default.** Low, Medium and High use
+Ideogram's official Turbo-12, Default-20 and Quality-48 samplers; MAX uses
+Quality-48 at twice the width and height, not an upscaled small image. Other
+aspect ratios keep their proportions, with a maximum edge around 1K or 2K.
+More steps or pixels do **not** guarantee better prompt adherence: compare
+the actual images, including unwanted text and other defects.
+
+Measured on an **M2 Max with 96 GiB**, with other apps left running:
+
+| Preset | Classical illustration | Headphone portrait |
+| --- | ---: | ---: |
+| Low | 4m 31s | 6m 37s |
+| Medium | 6m 51s | 10m 13s |
+| High | 15m 46s | 24m 35s |
+| MAX | 78m 01s | 123m 33s |
+
+**These times include failed outputs.** All eight attempts finished, but only
+four produced illustrations; the other four returned refusal-message images.
+The illustrations also missed details of the written brief. Low was the most
+economical classical sketch; MAX alone produced the headphone portrait, at a
+large time cost. This small comparison does not establish a universal quality
+winner or guaranteed waiting times.
+
+![Local image preset attempt times, including failures](extension/benchmarks/image-presets/timings.png)
+
+The [full local preset benchmark](extension/benchmarks/image-presets/README.md)
+includes every original image, visual findings, exact settings and reproduction
+steps. No images were retouched or failed attempts silently replaced.
 
 ## Local Video Generation (MiniMax H3)
 
@@ -993,7 +1036,7 @@ Behind the scenes DStudio **reverse-proxies the engine API** (`/v1`) to the loca
 - **Native window.** `app.cc` forks the server and opens a WKWebView (macOS) / WebKitGTK (Linux) window via `webview.h`; the page is base64-embedded (`page_data.h`).
 - **Same-origin proxy.** The page calls DStudio for `/v1`; DStudio forwards streaming requests to the local engine, which is why LAN works with no engine exposure and no settings.
 - **Durable native Task Graph runtime.** Multi-step work can use real Agent/tool/check/approval executors, loop detection, exact-write undo receipts and a live graph with pause/resume. The explicit `test-task-graph-reliability-real` target compares 50 real tasks using the full GGUF with SSD streaming off and remains outside `check-fast`.
-- **Native vision only.** DeepSeek Vision-Exp and GLM 5.3 Chat/Agent/Cowork/Design use their ds4 native encoders directly. Every other engine is text-only; no secondary VLM, visual router or fallback is installed. Ideogram 4 FP8 Quality-48 creates new images and full HunyuanImage-3.0-Instruct NF4/50-step edits source pixels directly.
+- **Native vision only.** DeepSeek Vision-Exp and GLM 5.3 Chat/Agent/Cowork/Design use their ds4 native encoders directly. Every other engine is text-only; no secondary VLM, visual router or fallback is installed. Ideogram 4 FP8 creates new images at the selected Low/Medium/High/MAX preset and full HunyuanImage-3.0-Instruct NF4/50-step edits source pixels directly.
 - **Text-first, native-vision PDF acceleration.** Poppler extraction, chunking and BM25 stay on the CPU. Qwen3-Embedding-0.6B ranks multilingual text only; it is not a router. DeepSeek Vision-Exp or GLM 5.3 can inspect a bounded selection of rendered pages through the currently loaded native encoder, while Laguna reports and skips image-only pages.
 
 ### The agent patch: building on ds4 without forking

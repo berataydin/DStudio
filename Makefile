@@ -510,6 +510,11 @@ test-design-release:
 
 test-image-pipeline:
 	@python3 tests/integration/image_pipeline_interrupt_test.py
+	@python3 tests/integration/image_presets_pipeline_test.py
+
+.PHONY: test-image-preset-publication
+test-image-preset-publication:
+	@python3 tests/unit/image_preset_publication_test.py
 
 test-image-runtime:
 	@if [ -x "$(HOME)/.dstudio/ideogram4/venv/bin/python" ] && \

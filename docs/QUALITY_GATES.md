@@ -39,15 +39,17 @@ safety, visual, or persistence metric goes down.
   cap closes the native `</think>` transition without capping the tool response
   or later rounds. DeepSeek Vision-Exp and GLM 5.3 inspect pixels with their
   matching native encoders. Their explicit image directive dispatches new images
-  directly to Ideogram 4 FP8 Quality-48 and edits directly to full
-  HunyuanImage-3.0-Instruct NF4/full-50, without Turbo, distilled or visual-router
+  directly to Ideogram 4 FP8 at the user's Low/Medium/High/MAX preset (MAX
+  preserves Quality-48 at 2K) and edits directly to full
+  HunyuanImage-3.0-Instruct NF4/full-50, without automatic downgrade or visual-router
   fallback; MiniMax H3 defaults to Quality. Users may explicitly
   select lower settings, but automation must never lower one to save time.
 - Ideogram 4, HunyuanImage and MiniMax H3 may not overlap on the 96 GB
   reference machine. Media calls fail closed if DS4 cannot yield enough
   residency, and all three one-shot workers share a kernel-owned process lock.
-  A lower profile is permitted only for a reproduced engine bug, with the bug
-  and restoration test recorded under the exception rule above.
+  A lower image preset is an explicit user choice, not a response to memory
+  pressure or a way to make an unchanged benchmark appear faster. Other
+  exceptions require the reproduced bug and restoration test described above.
 
 ## Gate ladder
 

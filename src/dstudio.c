@@ -429,10 +429,11 @@ typedef struct {
     int think;        /* agent/design: 0 nothink, 1 think (high), 2 think-max. default 1 */
     int design_think_tokens; /* design reasoning cap per tool round; 0 = unlimited */
     int ssd_streaming;/* 0 off, 1 force on, 2 auto. */
+    char image_preset[8]; /* cold launch config only; inherited by a Design session */
 } engine_cfg;
 
 static const engine_cfg ENGINE_DEFAULTS = {
-    0, 28000, 65536, 90, 24576, 128, 1, 0, SSD_STREAMING_OFF
+    0, 28000, 65536, 90, 24576, 128, 1, 0, SSD_STREAMING_OFF, "max"
 };
 
 /* ---- global engine state ---- */
@@ -5876,6 +5877,7 @@ static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, s
     win_join_path(exe, sizeof exe, g_ds4_dir, "ds4-design.exe");
     child_setenv_skills();
     setenv("DS4UI_RUNTIME_NAME", "design", 1);
+    setenv("DS4UI_IMAGE_PRESET", cfg->image_preset[0] ? cfg->image_preset : "max", 1);
     setenv("DS4UI_SSD_STREAMING_EFFECTIVE", g_ssd_streaming_effective ? "1" : "0", 1);
     char *think_flag = cfg->think == 0 ? "--nothink"
                      : cfg->think == 2 ? "--think-max"
@@ -5947,6 +5949,7 @@ static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, s
         if (!remote_model) child_setenv_metal(cfg);
         child_setenv_skills();                   /* on-demand skill()/design_system() packs */
         setenv("DS4UI_RUNTIME_NAME", "design", 1);
+        setenv("DS4UI_IMAGE_PRESET", cfg->image_preset[0] ? cfg->image_preset : "max", 1);
         setenv("DS4UI_SSD_STREAMING_EFFECTIVE", g_ssd_streaming_effective ? "1" : "0", 1);
         dup2(ip[0], STDIN_FILENO);
         dup2(op[1], STDOUT_FILENO);
@@ -7302,6 +7305,9 @@ static void parse_cfg(const char *body, engine_cfg *cfg, int *bad) {
     r = json_get_int(body, "kvMinTokens", 1, 100000, &v);if (r < 0) *bad = 1; else if (r) cfg->kv_min_tok = (int)v;
     r = json_get_int(body, "designThinkTokens", 0, 262144, &v);
     if (r < 0) *bad = 1; else if (r) cfg->design_think_tokens = (int)v;
+    if (json_get_string(body, "imagePreset", cfg->image_preset, sizeof cfg->image_preset) &&
+        strcmp(cfg->image_preset, "low") && strcmp(cfg->image_preset, "medium") &&
+        strcmp(cfg->image_preset, "high") && strcmp(cfg->image_preset, "max")) *bad = 1;
     char ssd[16];
     if (json_get_string(body, "ssdStreaming", ssd, sizeof ssd) && ssd[0]) {
         if (!strcmp(ssd, "off")) cfg->ssd_streaming = SSD_STREAMING_OFF;

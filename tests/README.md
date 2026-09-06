@@ -3,6 +3,22 @@
 Correctness before performance. No test is accepted merely because a function
 name, comment, prompt phrase or CSS declaration occurs in application source.
 
+Image presets: `make test-image-pipeline` executes the production coordinator
+and shell with explicitly simulated pixels. `make test-image-runtime` compares
+all four presets, seven aspect ratios and every CFG step to the installed
+official Ideogram/Comfy scheduler, including progress and the unchanged MAX
+default; it does not generate images. `make test-http-lan` checks native HTTP
+dispatch and rejects invalid presets. The Settings browser test runs in Chromium
+and WebKit; the video browser and native Design interrupt tests check that the
+saved preset reaches image requests without changing editing or video profiles.
+
+The opt-in [Hermes-inspired live benchmark](live/image_preset_benchmark.py)
+starts the actual installed Ideogram worker sequentially, with real weights.
+It retains per-image captions, hashes, parameters, progress, failures and
+wall time including model startup/shutdown. PNG sanity checks are separate from
+visual prompt-adherence review. Public charts use Matplotlib; see
+[image preset results](../extension/benchmarks/image-presets/README.md).
+
 Main engine update and real DeepSeek/GLM prefill/decode comparison:
 [September 5 update](../docs/DS4_MAIN_UPDATE_2026-09-05.md).
 `make test-main-decode-metrics` checks timing-span parsing and refuses speed

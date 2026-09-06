@@ -4683,6 +4683,12 @@ static char *design_tool_generate_image(design_project *pr,
     const char *source_path = tool_arg_value(call, "source_path");
     const char *aspect = tool_arg_value(call, "aspect");
     const char *preserve = tool_arg_value(call, "preserve");
+    const char *preset = tool_arg_value(call, "preset");
+    if (!preset || !preset[0]) preset = getenv("DS4UI_IMAGE_PRESET");
+    if (!preset || !preset[0]) preset = "max";
+    if (strcmp(preset, "low") && strcmp(preset, "medium") &&
+        strcmp(preset, "high") && strcmp(preset, "max"))
+        return tool_error("image preset must be low, medium, high or max");
     if (!path || !path[0]) return tool_error("generate_image requires path");
     if (!design_has_png_extension(path))
         return tool_error("generate_image path must end in .png");
@@ -4742,6 +4748,11 @@ static char *design_tool_generate_image(design_project *pr,
     buf_puts(&req, "\",\"job\":\"");
     buf_puts(&req, request_job_id);
     buf_puts(&req, "\"");
+    if (!source_b64) {
+        buf_puts(&req, ",\"preset\":\"");
+        buf_puts(&req, preset);
+        buf_puts(&req, "\"");
+    }
     if (source_b64) {
         buf_puts(&req, ",\"image\":\"data:");
         buf_puts(&req, source_mime);
@@ -4914,7 +4925,11 @@ static char *design_tool_generate_image(design_project *pr,
     buf_puts(&result, "]\n");
     buf_puts(&result, source_path && source_path[0]
         ? "Edited a project-local PNG directly with full HunyuanImage-3.0-Instruct ("
-        : "Generated a project-local PNG directly with Ideogram 4 Quality-48 (");
+        : "Generated a project-local PNG directly with Ideogram 4 (");
+    if (!source_path || !source_path[0]) {
+        buf_puts(&result, preset);
+        buf_puts(&result, " preset, ");
+    }
     snprintf(number, sizeof(number), "%zu", ignored_len);
     buf_puts(&result, number);
     buf_puts(&result, " bytes). Inspect it with see_image before use, then reference it with meaningful alt text.\n");
@@ -9129,12 +9144,13 @@ static const char design_system_prompt[] =
     "\"entry\":{\"type\":\"string\"}},"
     "\"required\":[\"entry\"]}}}\n\n"
     "{\"type\":\"function\",\"function\":{\"name\":\"generate_image\","
-    "\"description\":\"Generate or edit a project-local PNG through the direct local media pipeline. With no source_path it uses Ideogram 4 FP8 Quality-48; with source_path it uses full HunyuanImage-3.0-Instruct. Use only when requested or required by the active benchmark. Native vision must be available to inspect correspondence before placing it.\","
+    "\"description\":\"Generate or edit a project-local PNG through the direct local media pipeline. With no source_path it uses Ideogram 4 FP8 at the session image preset; with source_path it uses full HunyuanImage-3.0-Instruct. Use only when requested or required by the active benchmark. Native vision must be available to inspect correspondence before placing it.\","
     "\"parameters\":{\"type\":\"object\",\"properties\":{"
     "\"path\":{\"type\":\"string\",\"description\":\"Project-relative output path ending in .png, preferably under assets/.\"},"
     "\"prompt\":{\"type\":\"string\",\"description\":\"Specific art/edit direction: subject, composition, lighting, palette, camera/material language and exclusions. Avoid generated typography unless explicitly required.\"},"
     "\"source_path\":{\"type\":\"string\",\"description\":\"Optional project-relative PNG/JPEG/WebP to edit with HunyuanImage-3.0-Instruct. Omit for a new Ideogram image.\"},"
     "\"aspect\":{\"type\":\"string\",\"description\":\"Optional 16:9, 9:16, 3:2, 2:3, 4:3, 3:4 or 1:1.\"},"
+    "\"preset\":{\"type\":\"string\",\"enum\":[\"low\",\"medium\",\"high\",\"max\"],\"description\":\"New images only. Omit to keep the user's session setting (default MAX). Override only when the user requests it. Low: 12 steps/1K, Medium: 20/1K, High: 48/1K, MAX: 48/2K.\"},"
     "\"preserve\":{\"type\":\"string\",\"description\":\"Optional none or face for edit identity preservation.\"}},"
     "\"required\":[\"path\",\"prompt\"]}}}\n\n"
     "{\"type\":\"function\",\"function\":{\"name\":\"generate_video\","
