@@ -48,6 +48,18 @@ export function publicSearchReceipt(receipt) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  if (process.argv[2] === '--replay') {
+    const [, input, destination] = process.argv.slice(2);
+    assert.ok(input && destination, 'Pass --replay complete/results.json public.json');
+    const bytes = fs.readFileSync(input);
+    const current = { ...publicSearchReceipt(JSON.parse(bytes)), privateReceiptSha256: sha(bytes) };
+    assert.equal(current.fixtureVersion, 2);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, JSON.stringify({ schema: 'dstudio.search-evidence.replay.v1',
+      note: 'A separate complete development replay after the final excerpt/prompt changes; prior measurements and failed receipts are retained, not overwritten.',
+      current }, null, 2) + '\n');
+    process.exit(0);
+  }
   const [original, current, destination] = process.argv.slice(2);
   assert.ok(original && current && destination, 'Usage: node publish_search_quality.mjs ORIGINAL_JSON CURRENT_JSON PUBLIC_JSON');
   const read = file => { const bytes = fs.readFileSync(file); return { ...publicSearchReceipt(JSON.parse(bytes)), privateReceiptSha256: sha(bytes) }; };

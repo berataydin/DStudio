@@ -337,6 +337,18 @@ answer. Each invocation creates a fresh ignored receipt directory and preserves
 failures. Review every answer against the fixed primary-source expectations
 before publishing a quality score; completion and citations alone are not a pass.
 
+Focused regressions exercise URL-heavy page excerpts, overlapping windows,
+Unicode offsets, preserved original language/length constraints, evidence-ID
+selection and cancellation during synthesis. They run production functions
+with synthetic source/model data, not real-model quality measurements.
+The complete [pipeline report](../extension/search/bench/PIPELINE.md) separates
+live answer reviews from those deterministic checks. Its publisher requires
+every question and a review bound to each unchanged raw row. After review,
+`node tests/support/check_research_quality.mjs REFERENCE_JSON CURRENT_JSON`
+rejects any lost previously demonstrated requirement, even if the aggregate
+score or latency improves. The current receipt must contain all four after
+cases; a partial retry cannot satisfy this gate.
+
 See the [real-run report](../docs/ENGINE_ACCEPTANCE.md) for actual failures as well
 as successes. Qwen native generation throughput is reported separately from
 DStudio Chat latency and from the small cross-engine acceptance battery.

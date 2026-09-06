@@ -20,6 +20,7 @@ const tools = new Function('Api', 'Engine', 'performance', `
   const WEB_CONTEXT_CHARS = 1800;
   const WEB_RESEARCH_JUDGE_TIMEOUT_MS = Infinity;
   ${runtime}
+  let writerQuery;
   const useSimulatedDecisions = () => {
     classifyResearchRequest = async () => ({ intent: 'research', standaloneQuestion: 'Find a verified answer',
       needsSearch: true, queries: ['initial'], explicitUrls: [] });
@@ -27,10 +28,11 @@ const tools = new Function('Api', 'Engine', 'performance', `
       urls: [...state.byUrl.values()].filter(s => !state.readUrls.has(sourceKey(s.url))).slice(-2).map(s => s.url) });
     planNextResearchAction = async state => ({ action: 'web_search', queries: ['next-' + state.actions], reason: 'simulated unresolved question' });
     judgeResearchSufficiency = async () => ({ decision: 'continue', reason: 'Question unresolved', gaps: ['Missing requested detail'] });
-    synthesizeResearchReport = async (_q, state) => ({ report: 'Partial report', quality: null });
+    synthesizeResearchReport = async (query, state) => { writerQuery = query; return { report: 'Partial report', quality: null }; };
   };
   return { completeWebPipelineText, researchRunLimits, researchAdmissionOpen,
-    executeWebSearchQueries, readUrlsIntoState, addSourceToState, runResearchPipeline, useSimulatedDecisions };
+    executeWebSearchQueries, readUrlsIntoState, addSourceToState, runResearchPipeline, useSimulatedDecisions,
+    writerQuery: () => writerQuery };
 `)(api, engine, { now: () => now });
 const state = mode => ({ mode, purpose: 'answer', question: 'answer', limits: tools.researchRunLimits(mode),
   deadline: 1000, trace: [], byUrl: new Map(), readUrls: new Set(), searched: new Set(), facts: [] });
@@ -76,7 +78,10 @@ engine.webSearch = async query => ({ ok: true, sources: [0, 1].map(i => ({
   url: `https://example.test/${query}/${i}`, title: query, content: 'Lead',
 })) });
 reply = async () => { calls++; return JSON.stringify({ facts: [{ fact: 'A verified sentence.', excerpt: 'A verified sentence.' }] }); };
-const result = await tools.runResearchPipeline('Find an answer', { model: 'simulated' }, { mode: 'research' });
+const originalRequest = 'Find an answer. Rispondi in italiano, al massimo 120 parole.';
+const result = await tools.runResearchPipeline(originalRequest, { model: 'simulated' }, { mode: 'research' });
+assert.equal(tools.writerQuery(), originalRequest, 'A rewritten discovery question must not erase the original writer requirements');
+assert.ok(result.context.includes(originalRequest), 'The final answer context must retain original language and length requirements');
 assert.equal(result.budget.reads, 24);
 assert.ok(result.budget.actions <= 12);
 assert.ok(calls <= 24);

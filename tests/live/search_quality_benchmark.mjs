@@ -15,6 +15,7 @@ import { startDStudio, startMode, jsonFetch, completeTextStream } from '../suppo
 import { searchQualityCases, gradeSearchFacts, SEARCH_QUALITY_FIXTURE_VERSION } from '../fixtures/search_quality_cases.mjs';
 
 assert.ok(process.argv.includes('--run'), 'Pass --run to launch actual weights; this is not a model-free test.');
+execFileSync('make', ['test-search-evidence', 'test-frontend-unit'], { stdio: 'inherit' });
 const root = process.cwd();
 fs.mkdirSync('tests/.artifacts', { recursive: true });
 const work = fs.mkdtempSync(path.join(root, 'tests/.artifacts/search-quality-live-'));
@@ -83,6 +84,9 @@ try {
     await new Promise(resolve => setTimeout(resolve, 200));
   }
   assert.ok(browserReady, 'isolated Chrome unavailable');
+  const listeners = execFileSync('/usr/sbin/lsof', ['-n', '-P', '-iTCP:9333', '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+    .trim().split(/\s+/).map(Number);
+  assert.deepEqual([...new Set(listeners)], [chrome.pid], 'Never navigate an unrelated browser that won a port race');
   host = await startDStudio({ ignoreExternal: true, isolatedEnginePort: true,
     env: { DS4UI_DEFER_ENGINE_START: '1', DSTUDIO_KV_DIR: path.join(work, 'kv') } });
   const launch = { mode: 'server', gguf, ctx: 8192, power: 100, ssdStreaming: 'off', dspark: false, think: 'off', port: host.enginePort };

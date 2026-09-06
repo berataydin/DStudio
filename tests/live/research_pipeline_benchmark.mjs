@@ -13,10 +13,17 @@ import { startDStudio, startMode, jsonFetch, csrfHeaders, completeTextStream, sl
 import { researchPipelineCases } from '../fixtures/research_pipeline_cases.mjs';
 
 assert.ok(process.argv.includes('--run'), 'Pass --run to launch actual weights and browse public websites.');
+// Fail before starting a heavy model if a deterministic production regression
+// already fails. A shell caller must not accidentally bypass the prerequisite.
+execFileSync('make', ['test-search-evidence', 'test-frontend-unit'], { stdio: 'inherit' });
 const option = (name, fallback) => { const i = process.argv.indexOf(name); return i < 0 ? fallback : process.argv[i + 1]; };
 const root = process.cwd(), work = fs.mkdtempSync(path.join(root, 'tests/.artifacts/research-pipeline-'));
-const cases = researchPipelineCases.filter(t => option('--cases', researchPipelineCases.map(c => c.id).join(',')).split(',').includes(t.id));
-assert.ok(cases.length);
+const selected = option('--cases', researchPipelineCases.map(c => c.id).join(',')).split(',');
+const cases = researchPipelineCases.filter(t => selected.includes(t.id));
+assert.ok(cases.length); assert.equal(cases.length, selected.length, 'Unknown/duplicate case');
+const variantNames = option('--variants', 'before,after').split(',');
+assert.ok(variantNames.length && variantNames.every(v => ['before', 'after'].includes(v)));
+assert.equal(new Set(variantNames).size, variantNames.length, 'Duplicate variant');
 const sha = value => createHash('sha256').update(value).digest('hex');
 const before = execFileSync('git', ['show', 'c3329de:extension/search/runtime.js'], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
 const after = fs.readFileSync('extension/search/runtime.js', 'utf8');
@@ -25,7 +32,7 @@ const report = { schema: 'dstudio.research-pipeline.v1', started: new Date().toI
   host: { cpu: os.cpus()[0].model, memoryBytes: os.totalmem() },
   before: { revision: 'c3329de', sha256: sha(before) }, after: { sha256: sha(after) },
   settings: { model: 'ds4', temperature: 0, thinkLevel: 'off', context: 32768, ssdStreaming: 'off', finalMaxTokens: 2800, caseDeadlineMs: 1200000 },
-  cases, runs: [] };
+  cases, variants: variantNames, runs: [] };
 const save = () => fs.writeFileSync(path.join(work, 'results.json'), JSON.stringify(report, null, 2));
 let host, chrome, chromeLog, active, activeController, requestId = 0, interrupted = false;
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
@@ -87,6 +94,9 @@ try {
     await sleep(200);
   }
   assert.ok(ready, 'Owned browser not ready');
+  const listeners = execFileSync('/usr/sbin/lsof', ['-n', '-P', '-iTCP:9333', '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+    .trim().split(/\s+/).map(Number);
+  assert.deepEqual([...new Set(listeners)], [chrome.pid], 'Never navigate an unrelated browser that won a port race');
   host = await startDStudio({ ignoreExternal: true, isolatedEnginePort: true,
     env: { DS4UI_DEFER_ENGINE_START: '1', DSTUDIO_KV_DIR: path.join(work, 'kv') } });
   report.model = 'gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf';
@@ -97,7 +107,7 @@ try {
   report.modelBytes = fs.statSync(path.join(host.ds4Dir, report.model)).size;
   const variants = { before: makeRuntime(before), after: makeRuntime(after) };
   for (const [index, task] of cases.entries()) {
-    for (const variant of index % 2 ? ['after', 'before'] : ['before', 'after']) {
+    for (const variant of (index % 2 ? ['after', 'before'] : ['before', 'after']).filter(v => variantNames.includes(v))) {
       if (interrupted) break;
       active = { id: task.id, variant, status: 'running', requests: [], web: [], trace: [] };
       report.runs.push(active); save();

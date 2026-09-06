@@ -555,6 +555,8 @@ export function createWebPipeline(baseUrl) {
     'extractFactsFromRoadmapBatch',
     'extractFactsFromReadSources',
     'judgeResearchSufficiency',
+    'researchAnswerFacts',
+    'researchAnswerSources',
     'buildFactsContext',
     'sourceIdForFact',
     'buildResearchReportDraft',

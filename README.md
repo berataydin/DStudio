@@ -616,6 +616,22 @@ fact extraction, not a complete Search/Deep Research or general-quality ranking.
 
 [Exact questions, reviewed answers, settings and original failed receipts](extension/search/bench/README.md).
 
+### Complete research: are the final answers correct and concise?
+
+The complete public-web check is harder: **2/4 answers meet every requirement,
+versus 1/4 in the baseline**. HTTP and Python answers pass. The accessibility
+comparison now has correct facts but still exceeds the requested word limit;
+the Venus answer still mishandles conflicting source definitions. So the
+extraction result above is **not** an 8/8 claim for complete Deep Research.
+
+The chart includes a rejected intermediate version and every failed answer.
+Lower time on a failed answer is not counted as a speed win. These are four
+development questions, not a general accuracy score.
+
+![Complete Search and Research: baseline 1 of 4, first update 2 of 4, rejected candidate 1 of 4, final replay 2 of 4; all sixteen durations and failures are shown.](assets/README%20images/benchmarks/search-complete-pipeline.png)
+
+[Exact prompts, individual reviews, timings, remaining issues and reproducible Matplotlib script](extension/search/bench/PIPELINE.md).
+
 ### Real tasks against OpenWork and OpenDesign
 
 On the same local model, DStudio and OpenWork both fixed the code and produced

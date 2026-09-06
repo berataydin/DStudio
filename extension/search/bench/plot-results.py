@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Matplotlib only; regenerate from reviewed public data, no model/network."""
 import json
+import argparse
 from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
@@ -25,7 +26,9 @@ def make_chart(data):
     assert len(by_key) == 16
     fig, (quality, timing) = plt.subplots(1, 2, figsize=(13.4, 7.5), gridspec_kw={"width_ratios": [1, 2]})
     fig.subplots_adjust(left=.07, right=.97, top=.77, bottom=.19, wspace=.78)
-    fig.suptitle("More questions answered correctly — not consistently faster", fontsize=18, weight="bold", y=.96)
+    replay = data.get("schema") == "dstudio.search-evidence.replay.v1"
+    fig.suptitle("Final excerpt changes: the same eight-question check" if replay else
+                 "More questions answered correctly — not consistently faster", fontsize=18, weight="bold", y=.96)
     fig.text(.5, .90, "Real DeepSeek V4 Flash Vision-Exp IQ2XXS · Apple M2 Max, 96 GiB · 8k context · SSD streaming off", ha="center", fontsize=10)
     colors = {"before": "#64748b", "after": "#2563eb"}
     values = [sum(by_key[(i, v)]["reviewedPass"] for i in ids) for v in colors]
@@ -54,15 +57,21 @@ def make_chart(data):
     for ax in (quality, timing):
         ax.spines[["top", "right"]].set_visible(False)
     fig.text(.5, .105, "Grey: before · Blue: after · Circle: correct · ×: failed answer (not a speed win)", ha="center", fontsize=11)
-    fig.text(.5, .055, "8 development cases per version, one run each. Shared-host timings; not a complete Search/Deep Research benchmark.\n"
-             "Includes the 52.0 s after case. Original receipts, corrected-grader history and limitations are retained.", ha="center", fontsize=10, color="#475569")
+    footer = "Separate full development replay; prior measurements, original failures and limitations remain published." if replay else \
+             "Includes the 52.0 s after case. Original receipts, corrected-grader history and limitations are retained."
+    fig.text(.5, .055, "8 development cases per version, one run each. Shared-host timings; not a complete Search/Deep Research benchmark.\n" +
+             footer, ha="center", fontsize=10, color="#475569")
     return fig
 
 
 if __name__ == "__main__":
-    data = json.loads(DATA.read_text())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", type=Path, default=DATA)
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    data = json.loads(args.input.read_text())
     figure = make_chart(data)
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(OUTPUT, dpi=160, facecolor="white")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(args.output, dpi=160, facecolor="white")
     plt.close(figure)
-    print(OUTPUT.relative_to(ROOT))
+    print(args.output)

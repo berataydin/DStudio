@@ -1,18 +1,18 @@
-# Search, multimodal research and agent comparison — work in progress
+# Search, multimodal research and agent comparison — implementation and evidence
 
 The starting publication is `c3329de`. The earlier native-agent/Task Graph and
 original-Design comparisons do **not** cover OpenWork or OpenDesign's runtime.
-This checklist preserves the full requested scope; a completed subtask is not
-completion of the project below.
+This checklist records the delivered scope and its remaining quality limits;
+passing a narrow subtest must not be presented as general product reliability.
 
 | Requirement | Evidence needed | Current status |
 | --- | --- | --- |
-| Better Search and Deep Research | Matched questions, read sources and independently checked answers before/after | Real page/evidence development comparison: 3/8 before, 8/8 after; complete pipeline evaluation pending |
-| Vision models can inspect web images | Real page pixels reach the selected native vision model; text-only models receive an honest limitation | Actual Vision-Exp run reads two graphics correctly; bounded browser and capability gates pass, broader model/visual coverage pending |
-| Quality gates without excessive latency | Behavioral regressions plus real-model correctness and per-phase latency, with failures retained | Bounded query/read/action admission, model cancellation/deadlines and honest partial-result regressions pass; complete live evaluation pending |
+| Better Search and Deep Research | Matched questions, read sources and independently checked answers before/after | Full pipeline reviewed: 1/4 baseline, 2/4 first update, rejected focused v1 1/4, final focused v2 2/4; final WCAG facts repaired, NASA conflict and WCAG length failures remain |
+| Vision models can inspect web images | Real page pixels reach the selected native vision model; text-only models receive an honest limitation | Actual Vision-Exp reads both graphics; final complete 8-case replay confirms 3/8 before and 8/8 after. Other vision models and arbitrary images are not qualified by this run |
+| Quality gates without excessive latency | Behavioral regressions plus real-model correctness and per-phase latency, with failures retained | Bounded work/cancellation gates, two-pass excerpt regressions, original-request handoff and unknown-citation checks pass. Reviewed per-requirement gate rejects the first focused candidate and accepts the final candidate without turning known failures into passes |
 | Improve Agent and Cowork; compare OpenWork | Pinned actual OpenWork runtime, matching model/tasks, independently reopened files and results | Remote workspace regression fixed; corrected paired replay passes both code/document tasks for DStudio and OpenWork; original failures retained |
 | Compare Design with OpenDesign | Pinned actual OpenDesign runtime, matching briefs/model, rendered artifacts and working-control audit | One paired real brief completed/audited: DStudio passes the specified controls; OpenDesign hits the task deadline and its partial file has runtime JavaScript errors. No general ranking claimed |
-| Publish clear README examples | Exact prompts, real generated website screenshots, Matplotlib charts and public measurements | Search evidence publication complete; actual product chart/data, exact prompts and both unchanged website screenshots prepared and verified |
+| Publish clear README examples | Exact prompts, real generated website screenshots, Matplotlib charts and public measurements | Product comparisons, exact prompts and actual desktop/phone screenshots published; complete-pipeline and final evidence replay charts/data added with every failed outcome retained |
 
 ## Initial observations
 
@@ -170,10 +170,27 @@ Both aesthetic merits and limitations must be judged from the real screenshots,
 not those pass/fail counts. The Agent/Cowork corrected replay is separate from
 the original failed attempts.
 
-Next: review the matched complete research cases, including whether the new
-admission ceilings preserve the requested evidence coverage. Keep
-Agent/Cowork improvements, both competitor comparisons and README
-prompt/screenshots as separate required deliverables after those foundations.
-All published benchmark charts must use Matplotlib, with reviewed public
-measurements, plotting scripts and PNGs committed to GitHub as for Task Graph;
-these model-free gates are not benchmark evidence of better answers or speed.
+## Final investigation and limits
+
+The [complete-pipeline report](../extension/search/bench/PIPELINE.md) retains
+all three complete collections plus the documented interrupted collection.
+The focused-v1 candidate lost an answer despite lower times and was rejected.
+Follow-up fixes retain rule/scope text around excerpt boundaries, prevent URL
+menus from dominating relevance, preserve original writer requirements, allow
+explicitly grounded rule application and reject unknown citation IDs. The
+model-free tests execute these behaviors; they do not pretend to measure model
+quality. Both live runners now require those prerequisites before loading weights.
+
+The final four-question replay preserves all previously demonstrated individual
+requirements. Nevertheless only 2/4 final answers meet **every** requirement:
+NASA's source-definition conflict remains unresolved, and the otherwise correct
+WCAG response still exceeds its requested word limit. Passing the non-regression
+gate is not a semantic correctness guarantee. All sixteen complete-answer
+durations and all failed outcomes are shown in the Matplotlib chart. The
+subsequent full Vision-Exp evidence replay confirms 8/8 after the final source
+changes, with separate data/plot and no replacement of the initial receipts.
+
+Broader held-out research, curriculum quality, additional vision models,
+WebKit UI qualification and repeated product tasks remain outside these small
+development comparisons. Those limits are documented rather than inferred
+from a passing build, two graphics or a single generated website.

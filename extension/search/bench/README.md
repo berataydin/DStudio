@@ -4,7 +4,35 @@ The revised page-reading/evidence path answered **8/8** controlled questions
 correctly, versus **3/8** before. This is a small development comparison, not
 a claim that every research answer is correct or that the application is faster.
 
+For actual discovery through the **final answer**, see the separate
+[complete-pipeline review](PIPELINE.md): 2/4 fully passing answers versus 1/4
+baseline, with source-conflict and word-limit failures retained.
+
 ![Correct answers and every per-case duration](../../../assets/README%20images/benchmarks/search-evidence-quality-latency.png)
+
+## Final-change replay
+
+After the full-pipeline investigation, the final excerpt/prompt implementation
+was rerun on **all eight** controlled questions, with both variants and actual
+Vision-Exp weights. The result remains **3/8 before, 8/8 after**. Independent
+inspection confirmed all fictional values, version/tier distinctions, the
+left/right colors and the chart's North/South values against the captured pixels.
+After times range from about **15 to 22 seconds** in this separate shared-host
+run; most cases are not faster than their matched baseline. Previous timings,
+including the original 52-second after case, remain published above.
+
+![Separate complete final-change replay: 3 of 8 before, 8 of 8 after, all sixteen times retained.](../../../assets/README%20images/benchmarks/search-evidence-replay.png)
+
+[Final replay's public measurements, fictional answers and runtime hashes](results/2026-09-06-evidence-replay.json).
+This is still page reading/extraction, not the 2/4 complete-answer result.
+
+```sh
+node tests/support/publish_search_quality.mjs --replay \
+  path/to/complete/results.json extension/search/bench/results/2026-09-06-evidence-replay.json
+python3 extension/search/bench/plot-results.py \
+  --input extension/search/bench/results/2026-09-06-evidence-replay.json \
+  --output 'assets/README images/benchmarks/search-evidence-replay.png'
+```
 
 ## What changed for the user?
 

@@ -340,14 +340,18 @@ test-main-decode-metrics:
 .PHONY: test-search-evidence
 test-search-evidence:
 	@node tests/unit/search_evidence_test.mjs
+	@node tests/unit/research_evidence_windows_test.mjs
 	@node tests/unit/research_budget_test.mjs
+	@node tests/unit/research_answer_selection_test.mjs
 	@node tests/unit/research_http_cancel_test.mjs
 	@node tests/unit/search_quality_grader_test.mjs
 
 .PHONY: test-search-publication test-remote-agent-workspace
 test-search-publication:
 	@node tests/unit/search_publication_test.mjs
+	@node tests/unit/research_pipeline_publication_test.mjs
 	@python3 tests/unit/search_chart_test.py
+	@python3 tests/unit/research_pipeline_chart_test.py
 
 .PHONY: test-product-comparison-publication
 test-product-comparison-publication:
