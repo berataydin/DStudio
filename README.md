@@ -255,8 +255,6 @@ DStudio runs the downloadable MiniMax H3 weights through a pinned [antirez/h3.c]
 
 Open **Settings → Video** before the first generation. Review the upstream terms, confirm that your territory and intended use are authorized, then select **Prepare local H3**. Setup checks out and compiles an immutable h3.c revision without loading the engine, then downloads only the official `FL2VA/` files required for text/image-to-video. That original BF16 snapshot is about **134 GiB (144 GB)** on disk; partial files resume automatically. The managed runtime lives at `~/.dstudio/minimax-h3`; prompts, source frames and generated videos stay on this Mac. Existing converted ComfyUI checkpoints are a different layout and are not reused or deleted.
 
-H3 has its own [Community License Agreement](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE), including territorial, commercial and acceptable-use conditions. DStudio does not grant authorization; it requires an explicit confirmation before downloading or generating. Native h3.c requires MiniMax H3's official BF16 Qwen-family text encoder and checkpoint layout; this is an internal H3 component, not DStudio's removed visual router. During generation DStudio releases the chat model once, runs direct Ideogram opening-frame generation when requested, then launches h3.c. The upstream engine loads and releases its encoder, transformer and decoders in separate phases.
-
 Three render profiles expose h3.c's native controls. **Quality is the default**: it uses all 50 blocks, no denoiser reuse and documented 768p-class output sizes. **Balanced** uses the upstream validated controls `--layers 45 --reuse 2` at roughly 512-class dimensions. **Preview** keeps 20 steps but uses 40/50 DiT blocks, whole-denoiser reuse 3 and a reduced internal canvas that is upscaled to the selected output size. The user can change profiles in Settings, but DStudio never changes one automatically to save time; a lower profile is used only when the user selects it or when a reproducible engine bug is explicitly reported. Video cost grows sharply with pixel area and duration, so Quality can take substantially longer. M3 and older GPUs automatically use h3.c's portable BF16/MPS path; M5-class hardware can select its native Metal 4/TensorOps paths. The progress card remains in conditioning until h3.c emits denoise progress, then shows actual completed native steps and derives an ETA from measured step time.
 
 ## Search & Deep Research
@@ -269,6 +267,13 @@ Three render profiles expose h3.c's native controls. **Quality is the default**:
 
 Search runs through DStudio's local web helper, not a hosted browsing service. **Web Search** is the fast mode: it plans targeted queries, reads the best pages, extracts facts and answers with clickable citations. **Deep Research** uses the same tools with a longer evidence loop: classify the request, search, read primary sources, extract facts, judge sufficiency, synthesize a grounded report and keep the source cards attached to the answer.
 
+Before delivering a Deep Research answer, DStudio now checks it against the
+collected evidence and the original request. It can revise unsupported claims,
+missing details or undisclosed disagreements, and counts explicit word limits.
+The checked text is delivered directly, without a second rewrite. Failed review
+is shown as an incomplete draft, not a verified result. The evidence reviewer
+uses the local model too: this helps catch errors but cannot guarantee truth.
+
 Relevant details can now be selected from later page sections instead of only
 the beginning. With an active native vision model, research can also inspect
 real pixels from an image/chart on the page, not just its caption or URL.
@@ -280,7 +285,8 @@ Research also has a stopping point: Search admits up to 6 queries and 8 page
 reads; Deep Research up to 18 queries, 24 reads and 12 follow-up actions. It
 keeps collected evidence and marks unresolved work as incomplete. The 10/30-minute
 budgets stop new evidence work, not an already running inference or the final
-writer; individual model calls have a separate 15-minute ceiling. These are
+writer; discovery model calls have a separate 15-minute ceiling. Answer writing
+and review share four minutes, with at most two corrections. These are
 resource limits, not expected response times or proof of answer quality.
 
 ### Agent
@@ -618,17 +624,19 @@ fact extraction, not a complete Search/Deep Research or general-quality ranking.
 
 ### Complete research: are the final answers correct and concise?
 
-The complete public-web check is harder: **2/4 answers meet every requirement,
-versus 1/4 in the baseline**. HTTP and Python answers pass. The accessibility
-comparison now has correct facts but still exceeds the requested word limit;
-the Venus answer still mishandles conflicting source definitions. So the
-extraction result above is **not** an 8/8 claim for complete Deep Research.
+The latest real public-web run meets the checked requirements on **4/4 questions,
+versus 2/4 in the previous version**: two Search questions and two Deep Research
+questions. The Venus answer now discloses the conflicting source definitions;
+the accessibility comparison keeps the correct rules and exceptions in 189 words,
+below the requested 250. The two Search answers remain correct and concise.
 
-The chart includes a rejected intermediate version and every failed answer.
-Lower time on a failed answer is not counted as a speed win. These are four
-development questions, not a general accuracy score.
+This is a quality improvement on **four known development questions**, not a
+held-out accuracy score. It is not faster: the two Research answers took about
+312 and 293 seconds, versus 247 and 255 seconds for the previous failed answers.
+The chart retains all three rejected update attempts, including errors the model
+reviewer incorrectly approved. Original failures are not replaced by retries.
 
-![Complete Search and Research: baseline 1 of 4, first update 2 of 4, rejected candidate 1 of 4, final replay 2 of 4; all sixteen durations and failures are shown.](assets/README%20images/benchmarks/search-complete-pipeline.png)
+![Two Search and two Deep Research questions: previous version 2 of 4, three rejected attempts 3 of 4 each, latest version 4 of 4. All twenty durations and failed answers remain visible.](assets/README%20images/benchmarks/search-answer-review.png)
 
 [Exact prompts, individual reviews, timings, remaining issues and reproducible Matplotlib script](extension/search/bench/PIPELINE.md).
 
@@ -638,7 +646,9 @@ On the same local model, DStudio and OpenWork both fixed the code and produced
 the correct document plan. In this run DStudio took **110 vs 212 seconds** for
 code and **109 vs 170 seconds** for the plan. DStudio's website passed the
 tested controls; OpenDesign reached the 15-minute limit, and its partial page
-had broken controls. These are three small development tasks, not a general
+had broken controls. DStudio's output still has misaligned radio buttons and
+awkward label wrapping: the functional pass is **not a visual-quality pass**.
+These are three small development tasks, not a general
 ranking; original failures and test corrections are retained.
 
 ![Actual product tasks: independently checked results and observed times, including the unfinished OpenDesign run.](extension/benchmarks/product-comparison/product-comparison.png)

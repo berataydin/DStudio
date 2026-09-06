@@ -5,7 +5,81 @@ or a citation appeared. A correct answer must cover the requested details,
 have supporting source evidence, disclose relevant conflicting definitions,
 and follow the requested length. A faster wrong answer does not count as a win.
 
-**Final replay: 2/4 fully passing answers, versus 1/4 baseline.** The rejected
+## Answer-review update
+
+**Latest complete replay: 4/4 meets the checked requirements, versus 2/4 in the
+previous focused-evidence version.** This is two Search and two Deep Research
+questions; both formerly failing Research answers now pass the stated criteria.
+They are known development questions reused during implementation, not held-out
+evaluation or a general accuracy claim.
+
+![All five complete versions and twenty measured durations, with unsuccessful answers hatched.](../../../assets/README%20images/benchmarks/search-answer-review.png)
+
+| Question | Latest independent review | Words | End-to-end time |
+| --- | --- | --- | --- |
+| HTTP rule — Search | Correct optional header and rate-limiting meaning | 49 | 122 s |
+| Python suffix — Search | Correct version and resulting value | 22 | 61 s |
+| Venus periods — Deep Research | Correct periods; both conflicting source intervals disclosed | 193 | 312 s |
+| Accessible controls — Deep Research | Correct dimensions, levels and inline exceptions; no invented gap | 189 | 293 s |
+
+This is not a speed improvement. The prior failed Research answers took 247 and
+255 seconds. Nor is it a perfect-prose score: the latest Venus report has one
+imprecise, redundant sentence about whether intervals differ, after it already
+states both endpoints correctly. Its complete answer discloses the unreconciled
+definitions instead of asserting a settled daylight value. The independent
+review records this limitation rather than silently editing the generated answer.
+
+[Latest reviewed measurements](results/2026-09-06-review-definitions.json) ·
+[Matplotlib plotting script](plot-answer-review.py).
+The exact final runtime SHA-256 is
+`8fd0ac9e24536b6948f9c37a86a9bbe5e8b4e86c68c5fbc523514c8f82e12a20`.
+The per-requirement gate passes against the initial paired comparison, the prior
+focused replay and the first review attempt; no previously demonstrated
+requirement was traded for the aggregate score.
+
+Deep Research now compares shared-number definitions **before seeing a draft**,
+then writes a compact answer and reviews its claims against all collected
+statements/excerpts, not only the sufficiency judge's selection. Referenced
+counter-evidence is retained during corrections. Explicit numeric upper word
+limits in supported English/Italian forms are counted, including headings and
+sources. An unrecognized length instruction still relies on the model.
+
+The app delivers the exact reviewed text without another model rewrite.
+The original request and reviewed bytes are bound together; stale or altered
+reports cannot inherit a passing review. An unsuccessful review remains an
+incomplete draft. Source comparison, writing and at most two corrections share
+a four-minute deadline. A model review is **not** the benchmark grader or a
+guarantee of truth: it can inherit an extraction error or miss an unsupported claim.
+
+Three complete rejected development attempts are retained:
+
+- [Generic answer review](results/2026-09-06-review-generic.json): **3/4**. The
+  accessibility answer became concise, but the local reviewer still approved
+  the erroneous equivalence between two different intervals. Independent review
+  rejects that answer despite the model's approval.
+- [Definition-first review, parser failure](results/2026-09-06-review-parser-failure.json):
+  **3/4**. The Venus report disclosed both source definitions. The accessibility
+  run failed because a valid JSON array of comparison envelopes was passed
+  through an object-only extractor. Its retained 414-word fallback is marked
+  incomplete and fails the requested length. This is not a successful answer.
+- [Review with an unsupported gap](results/2026-09-06-review-unsupported-gap.json):
+  **3/4**. The parser completed and the accessibility answer met its 250-word
+  ceiling, but it invented uncertainty about a scope the cited general rule
+  already defines. The model reviewer approved this; independent review rejects
+  it. Cautious wording is not automatically factual. Writer/reviewer instructions
+  now explicitly check negative claims and gaps against the available rules.
+
+The parser correction accepts a complete object or a complete list of comparison
+envelopes. Both paths validate every group, fact identity and duplicate; no
+comparison is dropped to obtain a passing result. Production regressions cover
+this observed failure, malformed replies, omitted counter-evidence, cancelled
+review and exact delivery to the persisted/rendered assistant message.
+The added simulated regression also exercises rejecting and removing an invented
+gap while retaining the supported general rule and the original failed draft.
+
+## Earlier focused-evidence experiments
+
+**Earlier final replay: 2/4 fully passing answers, versus 1/4 baseline.** The rejected
 focused v1 candidate scored 1/4. The first update also scored 2/4, but had a
 WCAG content regression that the final version repairs. The final version
 preserves every individually demonstrated requirement from the initial
@@ -14,17 +88,17 @@ or all research questions now pass.
 
 ![Every complete answer and measured duration, including the rejected candidate and all failures.](../../../assets/README%20images/benchmarks/search-complete-pipeline.png)
 
-| Final question | Independent review | End-to-end time |
+| Earlier question | Independent review | End-to-end time |
 | --- | --- | --- |
 | HTTP rule | Correct, concise, cited | 108 s |
 | Python suffix | Correct version and value, concise, cited | 52 s |
 | Venus periods | Main values correct; undisclosed source-definition conflict remains | 247 s |
 | Accessible controls | Correct dimensions, levels and both inline exceptions; 318 words instead of fewer than 250 | 255 s |
 
-The two failed Research answers remain failures even though their observed
-durations are lower than the baseline. The actual language/length handoff is
-fixed and tested, but a model can still ignore the retained length instruction.
-There is no claimed hard word-limit guarantee or semantic contradiction checker.
+Those two earlier Research answers remain failures even though their observed
+durations are lower than the baseline. That earlier version preserved the
+language/length handoff, but lacked the bounded word checks and model evidence
+review described above. No version guarantees semantic truth.
 
 Public measurements and per-answer reviews:
 [initial paired comparison](results/2026-09-06-pipeline-initial.json),
@@ -46,7 +120,9 @@ alternating paired experiments and do not replace any original failure.
   deadline. Timings include planning, real search/read, extraction, sufficiency
   checks, the Research report when applicable, and the final answer. Model
   startup is outside the per-question duration.
-- The baseline runtime is `c3329de`; the first update is `1d21c29`.
+- The original baseline runtime is `c3329de`; the first update is `1d21c29`.
+  Answer-review replays use `--before b2206b8 --variants after` to record their
+  previous-version reference without pretending to re-run it as a paired test.
   Each receipt records the exact runtime SHA-256 and engine revision.
 - Isolated native host and task-owned headless Chrome. This executes the
   production pipeline but is **not** a macOS WebKit desktop-click E2E test.
@@ -175,6 +251,8 @@ have an inline exception. See the W3C
 node tests/live/research_pipeline_benchmark.mjs --run
 # A separate all-question development replay, never a replacement for failures:
 node tests/live/research_pipeline_benchmark.mjs --run --variants after
+# The subsequent answer-review development collection:
+node tests/live/research_pipeline_benchmark.mjs --run --variants after --before b2206b8
 
 # After independently reviewing every answer and binding its unchanged row hash:
 node tests/support/publish_research_pipeline.mjs \
@@ -182,8 +260,9 @@ node tests/support/publish_research_pipeline.mjs \
 # Reject loss of any previously demonstrated requirement, not only total score:
 node tests/support/check_research_quality.mjs \
   extension/search/bench/results/2026-09-06-pipeline-initial.json \
-  extension/search/bench/results/2026-09-06-pipeline-reviewed.json
+  extension/search/bench/results/2026-09-06-review-definitions.json
 python3 extension/search/bench/plot-pipeline.py
+python3 extension/search/bench/plot-answer-review.py
 make test-search-evidence test-search-publication test-frontend-unit
 ```
 

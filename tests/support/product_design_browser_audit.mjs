@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
 import { hasWorkshopIdentity, hasHonestWorkshopConfirmation } from '../fixtures/product_design_expectations.mjs';
 import { createProductArtifactServer } from './product_artifact_server.mjs';
+import { measureWorkshopRadioLayout } from './workshop_radio_layout.mjs';
 const file = path.resolve(process.argv[2] || '');
 assert.ok(process.argv[2], 'Pass pilot results.json');
 const receipt = JSON.parse(fs.readFileSync(file));
@@ -44,14 +45,23 @@ try {
     page.on('response', response => { if (response.status() >= 400) missing.push(response.url()); });
     try {
       await page.goto(`${base}/${candidate.product}/workshop.html`);
-      for (const width of [1440, 768, 390]) await check(`readable fitted page at ${width}px`, async () => {
+      for (const width of [1440, 768, 390]) {
+        await check(`required identity and no horizontal overflow at ${width}px`, async () => {
         await page.setViewportSize({ width, height: 1000 }); await page.waitForTimeout(100);
         const measure = await page.evaluate(() => ({ w: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth, text: document.body.innerText.replace(/\s+/g, ' ') }));
         const screenshot = `${candidate.product}-${width}.png`;
         await page.screenshot({ path: path.join(output, screenshot), fullPage: true }); row.screenshots.push(screenshot);
         assert.ok(measure.scroll <= measure.w + 1, 'Horizontal page overflow');
         assert.ok(hasWorkshopIdentity(measure.text), 'Required brand or heading missing');
-      });
+        });
+        const radioLayout = await measureWorkshopRadioLayout(page);
+        // Keep geometry separate from function. No radio means not applicable,
+        // never a fabricated visual pass for a different control structure.
+        (row.radioLayout ||= []).push({ width, applicable: radioLayout.length > 0, measurements: radioLayout });
+        if (radioLayout.length) await check(`radio label text clears indicator column at ${width}px`, async () => {
+          assert.ok(radioLayout.every(item => item.textClearsIndicatorColumn), 'Wrapped label text falls into the radio indicator column');
+        });
+      }
       row.initialDemoLabel = /\b(sample|demo|illustrative)\b/i.test(await page.locator('body').innerText());
       await check('choices, gating, Back, Review and real completion feedback', async () => {
         const next = () => page.getByRole('button', { name: /^Continue\b/i }).first();

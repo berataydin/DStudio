@@ -7,11 +7,11 @@ passing a narrow subtest must not be presented as general product reliability.
 
 | Requirement | Evidence needed | Current status |
 | --- | --- | --- |
-| Better Search and Deep Research | Matched questions, read sources and independently checked answers before/after | Full pipeline reviewed: 1/4 baseline, 2/4 first update, rejected focused v1 1/4, final focused v2 2/4; final WCAG facts repaired, NASA conflict and WCAG length failures remain |
+| Better Search and Deep Research | Matched questions, read sources and independently checked answers before/after | Latest answer-review replay: 4/4 checked requirements versus previous 2/4, on two Search and two Research development questions. Three rejected update attempts remain in the [complete-pipeline report](../extension/search/bench/PIPELINE.md); not a held-out/general score or model self-rating |
 | Vision models can inspect web images | Real page pixels reach the selected native vision model; text-only models receive an honest limitation | Actual Vision-Exp reads both graphics; final complete 8-case replay confirms 3/8 before and 8/8 after. Other vision models and arbitrary images are not qualified by this run |
 | Quality gates without excessive latency | Behavioral regressions plus real-model correctness and per-phase latency, with failures retained | Bounded work/cancellation gates, two-pass excerpt regressions, original-request handoff and unknown-citation checks pass. Reviewed per-requirement gate rejects the first focused candidate and accepts the final candidate without turning known failures into passes |
 | Improve Agent and Cowork; compare OpenWork | Pinned actual OpenWork runtime, matching model/tasks, independently reopened files and results | Remote workspace regression fixed; corrected paired replay passes both code/document tasks for DStudio and OpenWork; original failures retained |
-| Compare Design with OpenDesign | Pinned actual OpenDesign runtime, matching briefs/model, rendered artifacts and working-control audit | One paired real brief completed/audited: DStudio passes the specified controls; OpenDesign hits the task deadline and its partial file has runtime JavaScript errors. No general ranking claimed |
+| Compare Design with OpenDesign | Pinned actual OpenDesign runtime, matching briefs/model, rendered artifacts and working-control audit | DStudio passes the specified controls but fails radio-label layout at phone/desktop widths. OpenDesign hits the task deadline and its partial file has runtime JavaScript errors. Original screenshots retained; no general ranking claimed |
 | Publish clear README examples | Exact prompts, real generated website screenshots, Matplotlib charts and public measurements | Product comparisons, exact prompts and actual desktop/phone screenshots published; complete-pipeline and final evidence replay charts/data added with every failed outcome retained |
 
 ## Initial observations
@@ -170,7 +170,7 @@ Both aesthetic merits and limitations must be judged from the real screenshots,
 not those pass/fail counts. The Agent/Cowork corrected replay is separate from
 the original failed attempts.
 
-## Final investigation and limits
+## Earlier focused-evidence investigation and limits
 
 The [complete-pipeline report](../extension/search/bench/PIPELINE.md) retains
 all three complete collections plus the documented interrupted collection.
@@ -181,7 +181,7 @@ explicitly grounded rule application and reject unknown citation IDs. The
 model-free tests execute these behaviors; they do not pretend to measure model
 quality. Both live runners now require those prerequisites before loading weights.
 
-The final four-question replay preserves all previously demonstrated individual
+That four-question replay preserves all previously demonstrated individual
 requirements. Nevertheless only 2/4 final answers meet **every** requirement:
 NASA's source-definition conflict remains unresolved, and the otherwise correct
 WCAG response still exceeds its requested word limit. Passing the non-regression
@@ -194,3 +194,25 @@ Broader held-out research, curriculum quality, additional vision models,
 WebKit UI qualification and repeated product tasks remain outside these small
 development comparisons. Those limits are documented rather than inferred
 from a passing build, two graphics or a single generated website.
+
+## Answer review and visual benchmark correction
+
+The answer-review update compares shared-number definitions before a draft,
+checks the complete collected evidence, bounds corrective rewrites and counts
+explicit supported word ceilings. The exact reviewed answer reaches the saved
+assistant message without a second generation. Failed reviews remain incomplete.
+The model reviewer is not independent verification: live attempts exposed both
+a missed definition conflict and an invented gap that it incorrectly approved.
+All rejected attempts and the parser failure remain in the
+[measured report](../extension/search/bench/PIPELINE.md).
+The latest complete replay passes all four checked questions and the
+per-requirement non-regression gate, with 193/189-word Research reports.
+Their observed 312/293-second durations are higher than the earlier failed
+answers; correctness, not faster completion, is the demonstrated improvement.
+
+The Design benchmark's original functional pass did not establish visual quality.
+An actual Chromium geometry regression now reproduces the malformed radio label
+columns at 390 and 1440 px, distinguishes the unaffected 768 px layout and checks
+an independent good fixture. The original generated HTML and screenshots remain
+unchanged; neither the passing regression detector nor corrected chart labels
+mean the generated Design output has been repaired.

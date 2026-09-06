@@ -341,6 +341,23 @@ Focused regressions exercise URL-heavy page excerpts, overlapping windows,
 Unicode offsets, preserved original language/length constraints, evidence-ID
 selection and cancellation during synthesis. They run production functions
 with synthetic source/model data, not real-model quality measurements.
+`research_answer_review_test.mjs` exercises omitted counter-evidence, bounded
+writer/reviewer corrections, actual word counts (including exclusive bounds),
+malformed/unknown review IDs, transport failure and cancellation. Additional
+regressions preserve valid multi-envelope JSON comparisons and correct an
+invented evidence gap without deleting the general rule that answers it.
+The distinct
+`research_reply_delivery_test.mjs` executes the production assistant-reply
+lifecycle: exact reviewed text reaches the rendered and persisted message,
+failed review stays incomplete, and ordinary Chat/Search still stream normally.
+These are simulated model/UI dependencies, not a desktop WebKit E2E run.
+
+For a new measured replay, `--before COMMIT` records the intended historical
+runtime; `--variants after` keeps all four questions without re-running that
+historical version. The live runner follows each runtime's actual final-answer
+handoff, including direct delivery of reviewed reports in the new version.
+Independent answer review remains mandatory; the model review is not the grader.
+
 The complete [pipeline report](../extension/search/bench/PIPELINE.md) separates
 live answer reviews from those deterministic checks. Its publisher requires
 every question and a review bound to each unchanged raw row. After review,
@@ -348,6 +365,12 @@ every question and a review bound to each unchanged raw row. After review,
 rejects any lost previously demonstrated requirement, even if the aggregate
 score or latency improves. The current receipt must contain all four after
 cases; a partial retry cannot satisfy this gate.
+
+`make test-product-comparison-publication` also runs a real headless Chromium
+layout regression on the untouched published website. It detects wrapped radio
+labels entering the indicator column at 390/1440 px, tests an independent good
+layout, and verifies the original artifact hash. A passing regression detector
+does not mean the archived design passed: its visual defects remain visible.
 
 See the [real-run report](../docs/ENGINE_ACCEPTANCE.md) for actual failures as well
 as successes. Qwen native generation throughput is reported separately from

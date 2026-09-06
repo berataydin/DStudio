@@ -25,12 +25,13 @@ const variantNames = option('--variants', 'before,after').split(',');
 assert.ok(variantNames.length && variantNames.every(v => ['before', 'after'].includes(v)));
 assert.equal(new Set(variantNames).size, variantNames.length, 'Duplicate variant');
 const sha = value => createHash('sha256').update(value).digest('hex');
-const before = execFileSync('git', ['show', 'c3329de:extension/search/runtime.js'], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+const beforeRevision = option('--before', 'c3329de');
+const before = execFileSync('git', ['show', `${beforeRevision}:extension/search/runtime.js`], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
 const after = fs.readFileSync('extension/search/runtime.js', 'utf8');
 const report = { schema: 'dstudio.research-pipeline.v1', started: new Date().toISOString(), status: 'running',
   scope: 'Development comparison, complete pipeline and final answer on real public websites; independent semantic answer review required.',
   host: { cpu: os.cpus()[0].model, memoryBytes: os.totalmem() },
-  before: { revision: 'c3329de', sha256: sha(before) }, after: { sha256: sha(after) },
+  before: { revision: beforeRevision, sha256: sha(before) }, after: { sha256: sha(after) },
   settings: { model: 'ds4', temperature: 0, thinkLevel: 'off', context: 32768, ssdStreaming: 'off', finalMaxTokens: 2800, caseDeadlineMs: 1200000 },
   cases, variants: variantNames, runs: [] };
 const save = () => fs.writeFileSync(path.join(work, 'results.json'), JSON.stringify(report, null, 2));
@@ -61,7 +62,8 @@ const makeRuntime = source => new Function('Api', 'Engine', `
   const WEB_RESEARCH_PLAN_TIMEOUT_MS = Infinity, WEB_RESEARCH_JUDGE_TIMEOUT_MS = Infinity, WEB_RESEARCH_TOTAL_TIMEOUT_MS = Infinity;
   function isLanClientMode() { return false; }
   ${source}
-  return { runResearchPipeline, DEEP_RESEARCH_SYSTEM_PROMPT, DEEP_RESEARCH_SYNTHESIS_OUTPUT_PROTOCOL };
+  return { runResearchPipeline, DEEP_RESEARCH_SYSTEM_PROMPT, DEEP_RESEARCH_SYNTHESIS_OUTPUT_PROTOCOL,
+    researchReportForDelivery: typeof researchReportForDelivery === 'function' ? researchReportForDelivery : null };
 `)(
   { completeText: (payload, signal) => invoke(payload, signal, 'pipeline') },
   { status: () => jsonFetch(host.baseUrl, '/api/status', { timeoutMs: 3000 }),
@@ -120,7 +122,15 @@ try {
           mode: task.mode, signal: activeController.signal, onTrace: trace => { active.trace = trace; save(); },
         });
         active.pipelineMs = performance.now() - start; active.result = result; save();
-        active.answer = await invoke({ model: 'ds4', temperature: 0, thinkLevel: 'off', maxTokens: 2800,
+        // Use the same exact-answer handoff as the app. Historical runtimes
+        // still execute their original second writer; do not relabel a draft
+        // or skip a production inference merely to improve benchmark latency.
+        const delivery = runtime.researchReportForDelivery?.({ mode: task.mode, ...result }, task.question);
+        if (delivery) {
+          active.answer = delivery.content;
+          active.delivery = { complete: delivery.complete, error: delivery.error };
+          assert.ok(delivery.complete, delivery.error);
+        } else active.answer = await invoke({ model: 'ds4', temperature: 0, thinkLevel: 'off', maxTokens: 2800,
           messages: [
             { role: 'system', content: task.mode === 'research'
               ? runtime.DEEP_RESEARCH_SYSTEM_PROMPT + '\n' + runtime.DEEP_RESEARCH_SYNTHESIS_OUTPUT_PROTOCOL

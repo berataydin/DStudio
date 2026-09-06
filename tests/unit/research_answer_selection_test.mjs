@@ -24,7 +24,9 @@ for (const ids of [[], ['F1', 'F99'], ['F1', {}], ['F1', 'F2', 'F3', 'F4'], null
 assert.equal(tools.researchAnswerFacts({ ...state, judge: { decision: 'incomplete', answerFactIds: ['F1'] } }), facts);
 assert.deepEqual(tools.researchAnswerFacts({ ...state, judge: { decision: 'enough', answerFactIds: ['F2', 'F2'] } }), [facts[1]]);
 const report = '# Comparison\n\n## Summary\nRotation is longer [F1][F2].\n\n## Evidence\nRotation: 243 days [F1]. Orbit: 225 days [F2].\n\n## Gaps\nNone for these two periods.\n\n## Sources\nhttps://example.test/evidence';
-respond = async () => report;
+respond = async payload => payload.messages[0].content.includes('final-answer evidence reviewer')
+  ? JSON.stringify({ claimsSupported: true, requestedPartsCovered: true, conflictsHandled: true, instructionsFollowed: true, issues: [] })
+  : report;
 const result = await tools.synthesizeResearchReport('Compare the rotation and orbital periods', state, {});
 assert.equal(result.fallback, false, 'Omitting unrequested author trivia must not force a bloated fallback');
 assert.equal(result.quality.factCoverage, 1, 'Every selected answer fact must still be covered');

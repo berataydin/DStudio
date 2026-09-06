@@ -13,7 +13,7 @@ wins or that the underlying model became more intelligent.
 | --- | --- | --- |
 | Fix UTC grouping and save regression tests | Passed, 110 s | OpenWork: passed, 212 s |
 | Merge updated documents into an accurate plan | Passed, 109 s | OpenWork: passed, 170 s |
-| Build and operate a three-step workshop page | Passed, 725 s | OpenDesign: unfinished at 900 s; partial controls failed |
+| Build and operate a three-step workshop page | Controls passed; radio layout failed, 725 s | OpenDesign: unfinished at 900 s; partial controls failed |
 
 ![Matplotlib: real task completion times with the unfinished OpenDesign run retained.](product-comparison.png)
 
@@ -54,7 +54,16 @@ Actual outputs, not redesigned benchmark illustrations:
 
 The visual tradeoff is visible: OpenDesign puts the phone's action closer to the
 heading; DStudio places more explanatory text before the controls. A functional
-pass does not erase that usability opportunity. No generated HTML was repaired
+pass does not erase that usability opportunity. **DStudio also has visibly
+misaligned radio buttons and awkward label wrapping in these screenshots.**
+The original audit did not catch that layout defect. Its "Passed" result means
+the named controls worked, not that the page passed visual-quality review.
+The added browser regression measures the actual label rectangles: all three
+options fail the separate indicator-column check at **390 px and 1440 px**;
+all three pass it at 768 px. The audit now checks this geometry as well as
+function. The detector also passes an independent correctly laid-out fixture;
+that fixture is not substituted for either product's generated page.
+No generated HTML was repaired
 for these screenshots: [DStudio HTML](examples/dstudio-workshop.html),
 [OpenDesign partial HTML](examples/opendesign-workshop.html).
 

@@ -5,8 +5,9 @@ correctly, versus **3/8** before. This is a small development comparison, not
 a claim that every research answer is correct or that the application is faster.
 
 For actual discovery through the **final answer**, see the separate
-[complete-pipeline review](PIPELINE.md): 2/4 fully passing answers versus 1/4
-baseline, with source-conflict and word-limit failures retained.
+[complete-pipeline review](PIPELINE.md), including the newer answer-review
+update. Its earlier 2/4 replay and original source-conflict/word-limit failures
+are retained; page extraction is not a complete-answer accuracy score.
 
 ![Correct answers and every per-case duration](../../../assets/README%20images/benchmarks/search-evidence-quality-latency.png)
 
@@ -24,7 +25,7 @@ including the original 52-second after case, remain published above.
 ![Separate complete final-change replay: 3 of 8 before, 8 of 8 after, all sixteen times retained.](../../../assets/README%20images/benchmarks/search-evidence-replay.png)
 
 [Final replay's public measurements, fictional answers and runtime hashes](results/2026-09-06-evidence-replay.json).
-This is still page reading/extraction, not the 2/4 complete-answer result.
+This is still page reading/extraction, not a complete-answer result.
 
 ```sh
 node tests/support/publish_search_quality.mjs --replay \

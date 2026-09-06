@@ -31,7 +31,7 @@ export function publicPipelineReceipt(receipt, review) {
     for (const name of ['requestedFactsCorrect', 'sourceSupportChecked', 'noUndisclosedConflict', 'requestedFormatFollowed'])
       assert.equal(typeof audited[name], 'boolean', `Missing review criterion ${name}`);
     assert.ok(typeof audited.summary === 'string' && audited.summary.trim().length > 10);
-    const complete = row.status === 'completed-pending-independent-review' && !row.error;
+    const complete = row.status === 'completed-pending-independent-review' && !row.error && row.delivery?.complete !== false;
     const words = String(row.answer || '').trim().split(/\s+/).filter(Boolean).length;
     const task = researchPipelineCases.find(c => c.id === row.id);
     const lengthPass = task.mode !== 'research' || (task.id === 'accessible-target-comparison' ? words < 250 : words <= 250);
@@ -49,8 +49,15 @@ export function publicPipelineReceipt(receipt, review) {
       pageReads: row.web.filter(w => w.type === 'read').length,
       extractedFacts: row.result?.facts?.length ?? 0,
       selectedAnswerFacts: row.result?.judge?.answerFactIds || [],
+      automaticAnswerReview: row.result?.reportQuality?.deliveryVersion === 1 ? {
+        accepted: row.result.reportQuality.ok === true,
+        writerAttempts: row.result.reportAttempts?.length || 0,
+        comparedNumberGroups: row.result.reportQuality.comparisons?.length || 0,
+        differingDefinitionGroups: (row.result.reportQuality.comparisons || []).filter(item => item.relation === 'different').length,
+        deliveredWithoutSecondWriter: Boolean(row.delivery),
+      } : null,
       readSources: (row.result?.sources || []).filter(s => s.read).map(s => ({ id: s.sourceId, url: s.url })),
-      executionFailed: Boolean(row.error),
+      executionFailed: Boolean(row.error) || row.delivery?.complete === false,
     };
   });
   const result = { started: receipt.started, scope: receipt.scope, variants,

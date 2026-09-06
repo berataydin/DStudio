@@ -343,6 +343,8 @@ test-search-evidence:
 	@node tests/unit/research_evidence_windows_test.mjs
 	@node tests/unit/research_budget_test.mjs
 	@node tests/unit/research_answer_selection_test.mjs
+	@node tests/unit/research_answer_review_test.mjs
+	@node tests/unit/research_reply_delivery_test.mjs
 	@node tests/unit/research_http_cancel_test.mjs
 	@node tests/unit/search_quality_grader_test.mjs
 
@@ -352,10 +354,12 @@ test-search-publication:
 	@node tests/unit/research_pipeline_publication_test.mjs
 	@python3 tests/unit/search_chart_test.py
 	@python3 tests/unit/research_pipeline_chart_test.py
+	@python3 tests/unit/research_answer_review_chart_test.py
 
 .PHONY: test-product-comparison-publication
 test-product-comparison-publication:
 	@node tests/unit/product_design_grader_test.mjs
+	@node tests/browser/product_radio_layout_test.mjs
 	@node tests/unit/product_artifact_server_test.mjs
 	@node tests/unit/product_publication_test.mjs
 	@python3 tests/unit/product_chart_test.py

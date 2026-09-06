@@ -24,7 +24,8 @@ def make_figure(data):
         for bar, row, value in zip(bars, rows, seconds):
             if not row['pass']:
                 bar.set_hatch('//')
-            label = f"{value:.0f} s\nPassed" if row['pass'] else f"{value:.0f} s limit\nUnfinished; controls failed"
+            label = (f"{value:.0f} s\nControls passed\nVisual defects remain" if case == 'design-workshop-journey'
+                     else f"{value:.0f} s\nPassed") if row['pass'] else f"{value:.0f} s limit\nUnfinished; controls failed"
             ax.text(bar.get_x() + bar.get_width()/2, value + max(seconds)*.035, label,
                     ha='center', va='bottom', fontsize=10)
         names = {'dstudio': 'DStudio', 'openwork': 'OpenWork', 'opendesign': 'OpenDesign'}
@@ -37,7 +38,8 @@ def make_figure(data):
         ax.grid(axis='y', alpha=.2)
     fig.suptitle('Actual product runs — independently checked files and controls', fontsize=16, fontweight='bold')
     fig.supxlabel('One paired task per panel · M2 Max / 96 GiB · same local DeepSeek model, 32k context, SSD streaming off\n'
-                  'Development replay; shared-host timings. Original failures retained. Not a general product ranking.', fontsize=10)
+                  'Development replay; shared-host timings. DStudio radio alignment/label wrapping failed visual review.\n'
+                  'Functional checks only, not an aesthetic score or general product ranking. Original outputs are unchanged.', fontsize=10)
     return fig
 
 
