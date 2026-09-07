@@ -58,7 +58,7 @@ async function step(name, fn) {
 const configs = {
   main: { dir: 'ds4', endpoint: '/api/ds4/setup', commit: 'f4d03f6cf9f11c1e7b630bcb160853acfba7c52a' },
   laguna: { dir: 'ds4-laguna-s21', endpoint: '/api/laguna/setup', target: 'laguna-q4', commit: '448d5695d1c86401a4e9447c440feb983b73e6de' },
-  qwen: { dir: 'ds4-qwen38', endpoint: '/api/qwen/setup', target: 'qwen38-q4k', commit: 'bd9cfbccc03a709a3f00b50e0ac1cc41c3fcf02d' },
+  qwen: { dir: 'ds4-qwen38', endpoint: '/api/qwen/setup', target: 'qwen38-q4k', commit: '66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8' },
   qwen35: { dir: 'ds4-qwen35', endpoint: '/api/qwen35/setup', target: 'qwen36-q6', commit: '60fca11f0c8b16ca50c757324dddd717ba043098' },
 };
 function verifyRuntime(id, response) {

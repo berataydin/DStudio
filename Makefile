@@ -308,6 +308,113 @@ $(TEST_SERVER): $(SRC) $(SUBSRC) $(EXT_SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR
 test-lan-unit: $(TEST_UNIT)
 	@$(TEST_UNIT)
 
+.PHONY: test-launch-preflight test-launch-control test-ui-launch test-agent-spawn
+$(TEST_BUILD)/launch_preflight_unit: tests/unit/launch_preflight_unit.c $(SRC) $(SUBSRC) $(EXT_SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
+	@mkdir -p $(TEST_BUILD)
+	$(CC) $(CFLAGS) tests/unit/launch_preflight_unit.c -o $@
+
+test-launch-preflight: $(TEST_BUILD)/launch_preflight_unit
+	@$(TEST_BUILD)/launch_preflight_unit
+
+$(TEST_BUILD)/agent_spawn_unit: tests/unit/agent_spawn_unit.c $(SRC) $(SUBSRC) $(EXT_SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
+	@mkdir -p $(TEST_BUILD)
+	$(CC) $(CFLAGS) tests/unit/agent_spawn_unit.c -o $@
+
+test-agent-spawn: $(TEST_BUILD)/agent_spawn_unit
+	@$(TEST_BUILD)/agent_spawn_unit
+
+test-launch-control: $(TEST_SERVER)
+	@node tests/integration/launch_control_http_test.mjs $(TEST_SERVER)
+
+test-ui-launch:
+	@node tests/browser/ui_launch_control_playwright_test.mjs
+	@DSTUDIO_TEST_BROWSER=webkit node tests/browser/ui_launch_control_playwright_test.mjs
+
+check-fast: test-launch-control test-ui-launch
+ifeq ($(UNAME),Darwin)
+check-fast: test-agent-spawn
+endif
+
+.PHONY: test-steering test-steering-patch test-steering-runtime
+.PHONY: test-unified-patch test-agent-build test-agent-patch-migration test-agent-native-build test-runtime-patch-migration
+.PHONY: test-backend-link test-qwen38-agent test-metal-workspace test-qwen38-tool-oracle
+test-backend-link:
+	@node tests/integration/backend_link_test.mjs
+
+$(TEST_BUILD)/unified-patch-unit: tests/unit/unified_patch_unit.c $(SRC) $(SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
+	@mkdir -p $(TEST_BUILD)
+	$(CC) $(CFLAGS) tests/unit/unified_patch_unit.c -o $@
+
+test-unified-patch: $(TEST_BUILD)/unified-patch-unit
+	@$(TEST_BUILD)/unified-patch-unit
+
+$(TEST_BUILD)/agent-build-probe: tests/support/agent_build_probe.c $(SRC) $(SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
+	@mkdir -p $(TEST_BUILD)
+	$(CC) $(CFLAGS) tests/support/agent_build_probe.c -o $@
+
+test-agent-build: $(TEST_BUILD)/agent-build-probe
+	@node tests/integration/agent_build_test.mjs $(TEST_BUILD)/agent-build-probe
+
+test-agent-patch-migration:
+	@node tests/integration/agent_patch_migration_test.mjs
+
+test-runtime-patch-migration:
+	@node tests/integration/runtime_patch_migration_test.mjs
+
+# macOS: source-only snapshots and real compiler/tool execution, no weights.
+AGENT_MAIN_TREE ?= ds4
+AGENT_LAGUNA_TREE ?= ds4-laguna-s21
+AGENT_QWEN38_TREE ?=
+test-agent-native-build: $(TEST_BUILD)/agent-build-probe
+	@node tests/integration/agent_native_build_test.mjs "$(AGENT_MAIN_TREE)" "$(AGENT_LAGUNA_TREE)" $(if $(AGENT_QWEN38_TREE),"$(AGENT_QWEN38_TREE)")
+
+# Requires the already built Qwen candidate with the matching native Agent;
+# b4c3550 and 0bb323a have identical Agent source. No automatic download.
+QWEN38_AGENT_TREE ?= ds4-qwen38
+QWEN35_AGENT_TREE ?= ds4-qwen35
+QWEN38_AGENT_FLAGS ?= --sanitize
+test-qwen38-agent:
+	@node tests/integration/qwen38_agent_test.mjs "$(QWEN38_AGENT_TREE)" $(QWEN38_AGENT_FLAGS)
+
+.PHONY: test-qwen35-agent
+test-qwen35-agent:
+	@node tests/integration/qwen35_agent_test.mjs "$(QWEN35_AGENT_TREE)" $(QWEN35_AGENT_FLAGS)
+
+.PHONY: test-qwen-session-reset
+test-qwen-session-reset:
+	@node tests/integration/agent_reset_test.mjs "$(QWEN35_AGENT_TREE)" --sanitize
+	@node tests/integration/agent_reset_test.mjs "$(QWEN38_AGENT_TREE)" --qwen38 --sanitize
+
+test-qwen38-tool-oracle:
+	@node tests/unit/qwen38_tool_oracle_test.mjs
+
+# Existing native objects only; no engine mutation, build or weights download.
+METAL_WORKSPACE_TREES ?= ds4 ds4-laguna-s21 ds4-qwen38 ds4-qwen35
+test-metal-workspace: $(TEST_BUILD)/agent-build-probe
+	@node tests/integration/metal_workspace_test.mjs $(TEST_BUILD)/agent-build-probe $(METAL_WORKSPACE_TREES)
+
+check-fast: test-unified-patch test-agent-build
+
+$(TEST_BUILD)/steering-transport-test: tests/integration/steering_transport_test.c $(SRC) $(SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN) extension/remote/dstudio_remote_llm.c extension/remote/dstudio_remote_llm.h
+	@mkdir -p $(TEST_BUILD)
+	$(CC) $(CFLAGS) tests/integration/steering_transport_test.c extension/remote/dstudio_remote_llm.c -o $@
+
+test-steering: $(TEST_BUILD)/steering-transport-test
+	@$(TEST_BUILD)/steering-transport-test
+
+STEERING_TREES ?= ds4 ds4-laguna-s21
+STEERING_BINARIES ?= ds4/ds4-agent-jsonl ds4/ds4-cowork ds4/ds4-design ds4-laguna-s21/ds4-agent-jsonl ds4-laguna-s21/ds4-cowork
+$(TEST_BUILD)/steering-patch-test: tests/integration/steering_patch_test.c $(SRC) $(SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
+	@mkdir -p $(TEST_BUILD)
+	$(CC) $(CFLAGS) tests/integration/steering_patch_test.c -o $@
+
+test-steering-patch: $(TEST_BUILD)/steering-patch-test
+	@$(TEST_BUILD)/steering-patch-test $(STEERING_TREES)
+
+# Requires already built/patched runtimes; no downloads, model load or app restart.
+test-steering-runtime:
+	node tests/integration/runtime_steering_test.mjs $(STEERING_BINARIES)
+
 $(TEST_BUILD)/engine_setup_unit: tests/unit/engine_setup_unit.c $(SRC) $(SUBSRC) $(EXT_SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
 	@mkdir -p $(TEST_BUILD)
 	$(CC) $(CFLAGS) tests/unit/engine_setup_unit.c -o $@
@@ -316,6 +423,7 @@ $(TEST_BUILD)/engine_setup_unit: tests/unit/engine_setup_unit.c $(SRC) $(SUBSRC)
 test-engine-setup-unit: $(TEST_BUILD)/engine_setup_unit $(TEST_BUILD)/qwen35_runtime_unit
 	@$(TEST_BUILD)/engine_setup_unit
 	@$(TEST_BUILD)/qwen35_runtime_unit
+	@node tests/unit/agent_session_capability_test.mjs
 
 $(TEST_BUILD)/qwen35_runtime_unit: tests/unit/qwen35_runtime_unit.c tests/fixtures/qwen35-runtime-probe.sh $(SRC) $(SUBSRC) $(EXT_SUBSRC) $(GEN) $(LOADING_GEN) $(ANNOTATOR_GEN)
 	@mkdir -p $(TEST_BUILD)
@@ -327,6 +435,14 @@ check-fast: test-engine-setup-unit
 test-qwen35-download:
 	@python3 tests/integration/qwen35_download_test.py
 
+.PHONY: test-qwen35-catalog
+test-qwen35-catalog:
+	@node tests/integration/qwen35_catalog_patch_test.mjs "$(or $(QWEN35_DIR),ds4-qwen35)"
+
+.PHONY: test-qwen38-inspect
+test-qwen38-inspect:
+	@node tests/integration/qwen38_inspect_patch_test.mjs "$(or $(QWEN38_DIR),ds4-qwen38)"
+
 check-fast: test-qwen35-download
 
 .PHONY: test-glm53-m2max-patch
@@ -336,6 +452,10 @@ test-glm53-m2max-patch:
 .PHONY: test-main-decode-metrics
 test-main-decode-metrics:
 	@node tests/unit/main_decode_metrics_test.mjs
+
+.PHONY: test-server-metrics-patch
+test-server-metrics-patch:
+	@node tests/integration/server_metrics_patch_test.mjs "$(or $(METRICS_MAIN_DIR),ds4)" "$(or $(LAGUNA_DIR),ds4-laguna-s21)"
 
 .PHONY: test-search-evidence
 test-search-evidence:
@@ -458,21 +578,21 @@ test-cowork-bench-validate:
 	@command -v node >/dev/null 2>&1 || (echo "node missing: Cowork benchmark validation requires node" && exit 1)
 	@node extension/cowork/bench/validate.mjs
 
-test-design-build-freshness:
-	@bash tests/integration/design_build_freshness_test.sh
+test-design-build-freshness: $(TEST_BUILD)/agent-build-probe
+	@node tests/integration/design_build_test.mjs $(TEST_BUILD)/agent-build-probe
 
 .PHONY: test-design-archive-build test-design-tool-recovery test-design-comparison-report
 test-design-comparison-report:
 	node tests/unit/design_comparison_report_test.mjs
 
-test-design-archive-build:
-	@bash tests/integration/design_archive_build_test.sh
+test-design-archive-build: $(TEST_SERVER)
+	@DSTUDIO_BUILD_HOST="$(abspath $(TEST_SERVER))" bash tests/integration/design_archive_build_test.sh
 
 test-design-tool-recovery: test-design-self
 	@node tests/integration/design_tool_recovery_test.mjs
 
-test-design-self: test-design-build-freshness
-	@extension/design/build-design.sh build
+test-design-self: test-design-build-freshness $(TEST_SERVER)
+	@DSTUDIO_BUILD_HOST="$(abspath $(TEST_SERVER))" extension/design/build-design.sh build
 	@./ds4/ds4-design --self-test
 
 test-design-controls:

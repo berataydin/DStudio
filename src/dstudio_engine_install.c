@@ -62,9 +62,18 @@ static int setup_install_engine(const char *engine, const char *root,
     }
     printf("install-engine: building %s (no model loaded)\n", engine);
     if (qwen) {
-        /* Qwen's native tool syntax is not yet ported to DStudio's structured
-         * Agent/Cowork/Design patch. Offer Chat/native inference, not a false
-         * claim that the DeepSeek tool parser works for this architecture. */
+        if (!strcmp(engine, "qwen") &&
+            !run_ext_script_for_dir("scripts/apply-ds4-qwen38-inspect.sh", "apply", target)) {
+            snprintf(err, errsz, "Qwen3.8 PLE inspection patch did not apply; source changes preserved");
+            return 0;
+        }
+        if (!strcmp(engine, "qwen35") &&
+            !run_ext_script_for_dir("scripts/apply-ds4-qwen35-catalog.sh", "apply", target)) {
+            snprintf(err, errsz, "Qwen3.6 model-catalog patch did not apply; source changes preserved");
+            return 0;
+        }
+        /* Both forks retain their own inference semantics. Their structured
+         * Agent/Cowork patches are built separately in launch preparation. */
         char *args[] = {"make", "-j2", "-C", target, "ds4", "ds4-server", "ds4-agent", NULL};
         int rc = setup_run_cmd_capture(NULL, args, log_tail, sizeof log_tail);
         if (rc) { snprintf(err, errsz, "Qwen native build failed (%d): %.7000s", rc, log_tail); return 0; }
@@ -84,6 +93,16 @@ static int setup_engine_cli(int argc, char **argv) {
     }
     int downloaded = 0;
     int ok = setup_install_engine(argv[2], root, target, sizeof target, &downloaded, err, sizeof err);
+    /* The CLI has no interactive owner to block. In the app, this additional
+     * build belongs to the existing asynchronous launch preparation worker,
+     * not the synchronous optional-engine HTTP installer. */
+    if (ok && (!strcmp(argv[2], "qwen") || !strcmp(argv[2], "qwen35"))) {
+        cstr_copy(g_ds4_dir, sizeof g_ds4_dir, target);
+        ok = run_build_jsonl("build");
+        if (!ok)
+            snprintf(err, sizeof err, "Qwen Agent/Cowork build failed; existing source and model data preserved%s%s",
+                     g_engine_err[0] ? ": " : "", g_engine_err[0] ? g_engine_err : "");
+    }
     if (!ok) fprintf(stderr, "install-engine: FAILED: %s\n", err);
     else printf("install-engine: OK engine=%s downloaded=%d path=%s\n", argv[2], downloaded, target);
     return ok ? 0 : 1;
@@ -94,7 +113,7 @@ static void api_setup_qwen(int fd) {
     char target[DSTUDIO_PATH_MAX], err[8600] = ""; int downloaded = 0;
     int ok = setup_install_engine("qwen", g_web_dir, target, sizeof target, &downloaded, err, sizeof err);
     json_dyn_buf b = {0};
-    json_dyn_printf(&b, "{\"ok\":%s,\"downloaded\":%s,\"built\":%s,\"capability\":\"chat-native\",\"error\":",
+    json_dyn_printf(&b, "{\"ok\":%s,\"downloaded\":%s,\"built\":%s,\"capability\":\"chat-agent-cowork\",\"error\":",
                     ok ? "true" : "false", downloaded ? "true" : "false", ok ? "true" : "false");
     json_dyn_put_escaped(&b, err); json_dyn_puts(&b, "}");
     send_json(fd, ok ? "200 OK" : "409 Conflict", b.ptr ? b.ptr : "{\"ok\":false}");
@@ -115,7 +134,7 @@ static void api_setup_qwen35(int fd) {
     }
     int ok = setup_install_engine("qwen35", root, target, sizeof target, &downloaded, err, sizeof err);
     json_dyn_buf b = {0};
-    json_dyn_printf(&b, "{\"ok\":%s,\"downloaded\":%s,\"built\":%s,\"capability\":\"chat-native\",\"error\":",
+    json_dyn_printf(&b, "{\"ok\":%s,\"downloaded\":%s,\"built\":%s,\"capability\":\"chat-agent-cowork\",\"error\":",
                     ok ? "true" : "false", downloaded ? "true" : "false", ok ? "true" : "false");
     json_dyn_put_escaped(&b, err); json_dyn_puts(&b, "}");
     send_json(fd, ok ? "200 OK" : "409 Conflict", b.ptr ? b.ptr : "{\"ok\":false}");

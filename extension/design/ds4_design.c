@@ -11010,7 +11010,13 @@ static bool design_compact_if_needed(design_agent *a, const char *reason,
 /* One user turn: any number of assistant/tool rounds until the model answers
  * without a tool call.  The transcript is the single source of truth, exactly
  * like ds4-agent's worker_run_turn, minus the worker thread. */
+static void design_steer_append(void *owner, const char *text) {
+    design_agent *a = owner;
+    ds4_chat_append_message(a->engine, &a->transcript, "user", text);
+}
+
 static int run_turn(design_agent *a, const char *user_text) {
+    dstudio_steer steering = dstudio_steer_begin();
     ds4_think_mode think_mode = agent_think_mode(a);
     char compact_err[160] = {0};
     if (!design_compact_if_needed(a, "soft limit before user turn",
@@ -11042,6 +11048,7 @@ static int run_turn(design_agent *a, const char *user_text) {
     int generation_continues = 0;
 
     for (int tool_round = 0; ; tool_round++) {
+        dstudio_steer_drain(&steering, 0, design_steer_append, a);
         if (tool_round > 0 &&
             !design_compact_if_needed(a, "soft limit before tool continuation",
                                       compact_err, sizeof(compact_err)))
@@ -11301,6 +11308,7 @@ static int run_turn(design_agent *a, const char *user_text) {
             }
             out_text("\n", 1);
             dsml_parser_free(&dsml);
+            if (dstudio_steer_drain(&steering, 1, design_steer_append, a)) continue;
             design_project_finish_run(&a->project, "ok");
             return 0;
         }
@@ -13051,7 +13059,13 @@ static void design_remote_reset_messages(design_agent *a) {
     free(sys);
 }
 
+static void design_remote_steer_append(void *owner, const char *text) {
+    design_agent *a = owner;
+    dstudio_remote_messages_append(&a->remote_messages, &a->remote_message_count, "user", text);
+}
+
 static int design_remote_run_turn(design_agent *a, const char *user_text) {
+    dstudio_steer steering = dstudio_steer_begin();
     if (!a->session_title) {
         a->session_title = design_session_title_from_prompt(user_text, 0);
         a->session_created_at = (uint64_t)time(NULL);
@@ -13078,6 +13092,7 @@ static int design_remote_run_turn(design_agent *a, const char *user_text) {
     int incomplete_todo_continues = 0;
     for (int tool_round = 0; ; tool_round++) {
         (void)tool_round;
+        dstudio_steer_drain(&steering, 0, design_remote_steer_append, a);
         dsml_parser dsml;
         memset(&dsml, 0, sizeof(dsml));
         dsml.state = DSML_SEARCH;
@@ -13215,6 +13230,7 @@ static int design_remote_run_turn(design_agent *a, const char *user_text) {
             out_text("\n", 1);
             free(assistant);
             dsml_parser_free(&dsml);
+            if (dstudio_steer_drain(&steering, 1, design_remote_steer_append, a)) continue;
             design_project_finish_run(&a->project, "ok");
             return 0;
         }

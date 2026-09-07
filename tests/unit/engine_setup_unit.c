@@ -43,8 +43,10 @@ int main(void) {
     assert(!g_ssd_streaming_effective && !err[0]);
     assert(strstr(g_ssd_streaming_reason, "PLE stays SSD-backed"));
     g_dspark_enabled = 1;
-    assert(normalize_flash_memory_config(&cfg, 0, 0, reason, sizeof reason, NULL, NULL));
-    assert(!g_dspark_enabled);
+    int requested_dspark = 1;
+    assert(normalize_flash_memory_request(&cfg, 0, MODEL_QWEN, &requested_dspark, 0, reason, sizeof reason, NULL, NULL));
+    assert(!requested_dspark && g_dspark_enabled == 1);
+    g_dspark_enabled = 0;
 #ifndef _WIN32
     char temp[] = "/tmp/dstudio-engine-setup-unit.XXXXXX";
     assert(mkdtemp(temp));

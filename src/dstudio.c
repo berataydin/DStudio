@@ -357,7 +357,7 @@ static char *ds4_strndup_local(const char *s, size_t n) {
 #define DS4_LAGUNA_UPSTREAM_COMMIT "448d5695d1c86401a4e9447c440feb983b73e6de"
 #define DS4_LAGUNA_ARCHIVE_URL "https://codeload.github.com/antirez/ds4/tar.gz/" DS4_LAGUNA_UPSTREAM_COMMIT
 #define DS4_LAGUNA_DIR_NAME "ds4-laguna-s21"
-#define DS4_QWEN_UPSTREAM_COMMIT "bd9cfbccc03a709a3f00b50e0ac1cc41c3fcf02d"
+#define DS4_QWEN_UPSTREAM_COMMIT "66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8"
 #define DS4_QWEN_ARCHIVE_URL "https://codeload.github.com/ivanfioravanti/ds4-metal/tar.gz/" DS4_QWEN_UPSTREAM_COMMIT
 #define DS4_QWEN_DIR_NAME "ds4-qwen38"
 #define MODEL_QWEN "gguf/Qwen3.8-Flash-Next-Q4KImatrixExperts-MXFP4Down-BF16Emb-BF16Control-Q8GDN-Q8QSA-Q8Shared-Q8Out.gguf"
@@ -432,6 +432,26 @@ typedef struct {
     char image_preset[8]; /* cold launch config only; inherited by a Design session */
 } engine_cfg;
 
+typedef struct {
+    char base_url[1024];
+    char model[128];
+    char api_key[256];
+} remote_start_cfg;
+
+/* A launch worker prepares this private payload. Only the HTTP owner may
+ * consume it after validating the candidate and the executable's identity. */
+typedef struct {
+    int server_pld;
+    char *skill_sys;
+} launch_prepared;
+static int launch_preparation_busy(void);
+static void launch_preparation_tick(void);
+static void launch_preparation_shutdown(void);
+static int launch_prepare_cli(int argc, char **argv);
+static int g_launch_adopt = 0;
+static char g_launch_executable[DSTUDIO_PATH_MAX];
+static volatile sig_atomic_t g_launch_worker_cancel = 0;
+
 static const engine_cfg ENGINE_DEFAULTS = {
     0, 28000, 65536, 90, 24576, 128, 1, 0, SSD_STREAMING_OFF, "max"
 };
@@ -439,6 +459,8 @@ static const engine_cfg ENGINE_DEFAULTS = {
 /* ---- global engine state ---- */
 static int       g_mode = ENGINE_NONE;
 static pid_t     g_child = -1;
+static int       g_child_stop_requested = 0;
+static long long g_child_stop_deadline = 0;
 static int       g_external_server = 0; /* compatible or still-starting ds4-server reused, never owned/stopped by DStudio */
 static long long g_external_wait_started_ms = 0;
 static engine_cfg g_cfg;
@@ -2590,17 +2612,17 @@ static long long delete_laguna_partial_files(const char *checkout, int *failed) 
 static const char *current_model_rel(void) {
     return g_model_override[0] ? g_model_override : variant_rel(g_variant);
 }
-static int model_is_glm(void) {
-    const char *rel = current_model_rel();
+static int model_file_is_glm(const char *rel) {
     const char *base = strrchr(rel, '/');
     return strstr(base ? base + 1 : rel, "GLM") != NULL;
 }
-static int model_is_deepseek_vision(void) {
-    const char *rel = current_model_rel();
+static int model_is_glm(void) { return model_file_is_glm(current_model_rel()); }
+static int model_file_is_deepseek_vision(const char *rel) {
     const char *base = strrchr(rel, '/');
     const char *name = base ? base + 1 : rel;
     return mem_contains_ci(name, strlen(name), "deepseek-v4-flash-vision-exp");
 }
+static int model_is_deepseek_vision(void) { return model_file_is_deepseek_vision(current_model_rel()); }
 static int model_file_is_auxiliary(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
@@ -2621,21 +2643,23 @@ static int model_file_is_supported(const char *name) {
     if (!mem_contains_ci(name, len, "glm")) return 1;
     return mem_contains_ci(name, len, "glm-5.3");
 }
-static int model_is_laguna(void) {
-    const char *rel = current_model_rel();
+static int model_file_is_laguna(const char *rel) {
     const char *base = strrchr(rel, '/');
     const char *name = base ? base + 1 : rel;
     return mem_contains_ci(name, strlen(name), "laguna");
 }
+static int model_is_laguna(void) { return model_file_is_laguna(current_model_rel()); }
 static int model_file_is_qwen35(const char *name) {
     return name && mem_contains_ci(name, strlen(name), "qwen3.6-35b-a3b");
 }
 static int model_is_qwen35(void) {
     return model_file_is_qwen35(current_model_rel());
 }
+static int model_file_is_qwen38(const char *rel) {
+    return rel && mem_contains_ci(rel, strlen(rel), "qwen3.8-flash-next");
+}
 static int model_is_qwen38(void) {
-    const char *rel = current_model_rel();
-    return mem_contains_ci(rel, strlen(rel), "qwen3.8-flash-next");
+    return model_file_is_qwen38(current_model_rel());
 }
 static int model_is_qwen(void) { return model_is_qwen38() || model_is_qwen35(); }
 static int selected_checkout_is_qwen35(void) {
@@ -2650,6 +2674,27 @@ static int selected_checkout_is_qwen(void) {
     if (!strcmp(base ? base + 1 : g_ds4_dir, DS4_QWEN_DIR_NAME)) return 1;
     char branch[128]; git_branch_of(g_ds4_dir, branch, sizeof branch);
     return !strcmp(branch, "qwen3.8-flash-next");
+}
+/* The same capability decision is used on a private launch candidate and at
+ * spawn. Reject before stopping a working runtime, admitting a task, or resetting
+ * pending steering. Both Qwen forks have explicit structured Agent/Cowork
+ * patches; the independent Design runtime still needs its own adapter. */
+static int native_launch_mode_supported(int mode, const char *model_rel,
+                                       int remote, char *err, size_t errsz) {
+    if (remote || mode == ENGINE_SERVER) return 1;
+    if ((model_file_is_qwen38(model_rel) || model_file_is_qwen35(model_rel)) &&
+        (mode == ENGINE_AGENT || mode == ENGINE_COWORK)) return 1;
+    if (!model_file_is_qwen35(model_rel) && !model_file_is_qwen38(model_rel) &&
+        !selected_checkout_is_qwen()) return 1;
+    snprintf(err, errsz,
+             "The selected Qwen model's structured %s adapter is not implemented",
+             mode == ENGINE_DESIGN ? "Design" : "Agent/Cowork");
+    return 0;
+}
+/* The Qwen3.6 fork's disk payload omits its recurrent state. Conversations and
+ * the live session remain usable; a disk checkpoint cannot promise resumption. */
+static int agent_disk_checkpoints_supported(void) {
+    return MODE_IS_PIPED(g_mode) && (g_remote_base_url[0] || !model_is_qwen35());
 }
 static int model_is_flash(void) {
     const char *rel = current_model_rel();
@@ -2687,11 +2732,20 @@ static int native_deepseek_vision_installed(void) {
 #endif
 }
 
-static const char *native_selected_vision_encoder(void) {
-    if (model_is_glm() && native_glm_vision_installed()) return MODEL_GLM53_VISION;
-    if (model_is_deepseek_vision() && native_deepseek_vision_installed())
-        return MODEL_DSVISION_ENCODER;
+/* Identity even when missing: installing an encoder during preparation changes
+ * the candidate's input capabilities and must be revalidated before publication. */
+static const char *native_vision_encoder_rel_for_model(const char *model_rel) {
+#ifdef _WIN32
+    (void)model_rel;
+#else
+    if (model_file_is_glm(model_rel)) return MODEL_GLM53_VISION;
+    if (model_file_is_deepseek_vision(model_rel)) return MODEL_DSVISION_ENCODER;
+#endif
     return NULL;
+}
+static const char *native_selected_vision_encoder(void) {
+    const char *rel = native_vision_encoder_rel_for_model(current_model_rel());
+    return rel && file_present(rel) ? rel : NULL;
 }
 
 static unsigned long long dstudio_physical_memory_bytes(void) {
@@ -2714,19 +2768,26 @@ static unsigned long long dstudio_physical_memory_bytes(void) {
 #endif
 }
 
-static long long current_model_file_size(void) {
+static long long model_rel_file_size(const char *rel) {
     char full[2048];
-    snprintf(full, sizeof full, "%s/%s", g_ds4_dir, current_model_rel());
+    snprintf(full, sizeof full, "%s/%s", g_ds4_dir, rel);
     struct stat st;
     if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
     return (long long)st.st_size;
 }
 
-static const char *current_dspark_rel(void) {
-    if (model_is_deepseek_vision()) return MODEL_DSVISION_DSPARK;
-    return strstr(current_model_rel(), "Abliterated")
+static long long current_model_file_size(void) {
+    return model_rel_file_size(current_model_rel());
+}
+
+static const char *dspark_rel_for_model(const char *model_rel) {
+    const char *base = strrchr(model_rel, '/');
+    const char *name = base ? base + 1 : model_rel;
+    if (mem_contains_ci(name, strlen(name), "deepseek-v4-flash-vision-exp")) return MODEL_DSVISION_DSPARK;
+    return strstr(model_rel, "Abliterated")
         ? MODEL_DSPARK_ABLITERATED : MODEL_DSPARK_UPSTREAM;
 }
+static const char *current_dspark_rel(void) { return dspark_rel_for_model(current_model_rel()); }
 
 static long long current_dspark_file_size(void) {
     char full[2048];
@@ -2840,7 +2901,8 @@ static int flash_config_fits_metal(const engine_cfg *cfg, int with_dspark,
  * otherwise. Context reduction is a quality regression, so the largest fully
  * resident context is diagnostic information only. DSpark is never silently
  * removed for capacity: an oversized pair pauses for explicit confirmation. */
-static int normalize_flash_memory_config(engine_cfg *cfg, int remote_model,
+static int normalize_flash_memory_request(engine_cfg *cfg, int remote_model,
+                                         const char *model_rel, int *dspark_enabled,
                                          int allow_over_budget_dspark,
                                          char *note, size_t notesz,
                                          unsigned long long *required_out,
@@ -2848,11 +2910,14 @@ static int normalize_flash_memory_config(engine_cfg *cfg, int remote_model,
     if (note && notesz) note[0] = '\0';
     if (required_out) *required_out = 0;
     if (budget_out) *budget_out = 0;
+    const char *base = strrchr(model_rel, '/');
+    const char *name = base ? base + 1 : model_rel;
+    const int is_flash = mem_contains_ci(name, strlen(name), "deepseek-v4-flash");
     /* DSpark is an external DeepSeek Flash draft model. GLM 5.3 has its own
      * integrated MTP block, so a persisted DSpark toggle must never attach a
      * DeepSeek support GGUF to GLM (or to another model family). */
-    if (cfg && !remote_model && !model_is_flash() && g_dspark_enabled) {
-        g_dspark_enabled = 0;
+    if (cfg && !remote_model && !is_flash && *dspark_enabled) {
+        *dspark_enabled = 0;
         if (note && notesz)
             snprintf(note, notesz,
                      "DSpark disabled because it is only compatible with DeepSeek V4 Flash");
@@ -2861,13 +2926,19 @@ static int normalize_flash_memory_config(engine_cfg *cfg, int remote_model,
     (void)cfg; (void)remote_model; (void)allow_over_budget_dspark;
     return 1;
 #else
-    if (!cfg || remote_model || !model_is_flash() || current_model_file_size() <= 0 ||
-        local_metal_budget_bytes() == 0) return 1;
+    if (!cfg || remote_model || !is_flash) return 1;
+    const long long model_bytes = model_rel_file_size(model_rel);
+    const unsigned long long budget = local_metal_budget_bytes();
+    if (model_bytes <= 0 || budget == 0) return 1;
     const int requested_ctx = cfg->ctx;
-    unsigned long long required = 0, budget = 0;
+    unsigned long long required = 0;
+    const char *support_rel = dspark_rel_for_model(model_rel);
+    const long long support_bytes = *dspark_enabled ? model_rel_file_size(support_rel) : 0;
+    if (*dspark_enabled && support_bytes > 0)
+        required = flash_required_memory_bytes(cfg->ctx, (unsigned long long)model_bytes,
+                                               (unsigned long long)support_bytes);
 
-    if (g_dspark_enabled &&
-        !flash_config_fits_metal(cfg, 1, &required, &budget)) {
+    if (*dspark_enabled && required > budget) {
         /* A missing support checkpoint is diagnosed precisely by spawn_*.
          * When both sizes and the Metal budget are known, exceeding the
          * estimate is a user choice: never silently rewrite the DSpark
@@ -2893,11 +2964,10 @@ static int normalize_flash_memory_config(engine_cfg *cfg, int remote_model,
         }
     }
 
-    const int mapped = !g_dspark_enabled &&
+    const int mapped = !*dspark_enabled &&
         cfg->ssd_streaming != SSD_STREAMING_ON &&
-        !flash_config_fits_metal(cfg, 0, &required, &budget);
+        flash_required_memory_bytes(cfg->ctx, (unsigned long long)model_bytes, 0) > budget;
     if (note && notesz && mapped) {
-        const long long model_bytes = current_model_file_size();
         const int resident_ctx = flash_largest_safe_context(
             requested_ctx,
             model_bytes > 0 ? (unsigned long long)model_bytes : 0ull,
@@ -2916,15 +2986,16 @@ static int normalize_flash_memory_config(engine_cfg *cfg, int remote_model,
 #endif
 }
 
-static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_model,
-                                          char *reason, size_t reasonsz,
-                                          char *err, size_t errsz) {
+static int model_ssd_streaming(const engine_cfg *cfg, int remote_model,
+                               const char *model_rel, int dspark_enabled,
+                               char *reason, size_t reasonsz,
+                               char *err, size_t errsz) {
     if (reason && reasonsz) reason[0] = '\0';
     if (err && errsz) err[0] = '\0';
     if (!cfg || cfg->ssd_streaming == SSD_STREAMING_OFF) {
-        snprintf(reason, reasonsz, "%s", !remote_model && model_is_qwen35()
+        snprintf(reason, reasonsz, "%s", !remote_model && model_file_is_qwen35(model_rel)
                  ? "Qwen3.6 uses resident Metal weights; no PLE or expert SSD streaming"
-                 : !remote_model && model_is_qwen38()
+                 : !remote_model && model_file_is_qwen38(model_rel)
                  ? "Qwen resident backbone; required PLE stays SSD-backed"
                  : "disabled: DS4-only mode uses normal Metal mapped residency");
         return 0;
@@ -2937,7 +3008,7 @@ static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_mode
         snprintf(reason, reasonsz, "auto disabled for remote model");
         return 0;
     }
-    if (g_dspark_enabled) {
+    if (dspark_enabled) {
         if (cfg->ssd_streaming == SSD_STREAMING_ON) {
             snprintf(err, errsz, "DSpark is not compatible with SSD streaming");
             return -1;
@@ -2945,7 +3016,7 @@ static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_mode
         snprintf(reason, reasonsz, "auto disabled: DSpark requires the memory-mapped model path");
         return 0;
     }
-    if (model_is_laguna()) {
+    if (model_file_is_laguna(model_rel)) {
         if (cfg->ssd_streaming == SSD_STREAMING_ON) {
             snprintf(err, errsz, "Laguna S 2.1 currently requires full model residency; SSD streaming cannot be forced on");
             return -1;
@@ -2953,7 +3024,7 @@ static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_mode
         snprintf(reason, reasonsz, "auto disabled: Laguna S 2.1 requires full residency");
         return 0;
     }
-    if (model_is_qwen35()) {
+    if (model_file_is_qwen35(model_rel)) {
         if (cfg->ssd_streaming == SSD_STREAMING_ON) {
             snprintf(err, errsz, "Qwen3.6 requires resident Metal weights; expert SSD streaming is not supported by this engine");
             return -1;
@@ -2961,7 +3032,7 @@ static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_mode
         snprintf(reason, reasonsz, "Qwen3.6 uses resident Metal weights; no PLE or expert SSD streaming");
         return 0;
     }
-    if (model_is_qwen38()) {
+    if (model_file_is_qwen38(model_rel)) {
         if (cfg->ssd_streaming == SSD_STREAMING_ON) {
             snprintf(err, errsz, "Set SSD streaming to Off for Qwen: its main weights stay in RAM and its required PLE stays on SSD; expert streaming is not supported");
             return -1;
@@ -2984,6 +3055,56 @@ static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_mode
     snprintf(reason, reasonsz, "auto disabled: DS4 is the sole active heavyweight model");
     return 0;
 #endif
+}
+
+static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_model,
+                                          char *reason, size_t reasonsz,
+                                          char *err, size_t errsz) {
+    return model_ssd_streaming(cfg, remote_model, current_model_rel(), g_dspark_enabled,
+                               reason, reasonsz, err, errsz);
+}
+
+/* Read-only admission checks shared with spawn. Do not publish an effective
+ * memory mode, build a runtime, create a KV directory, or stop the old child
+ * until these checks accept the incoming model/configuration. File presence
+ * is only a prerequisite here; the engine must still validate the actual GGUF. */
+static const char *native_launch_preflight(const engine_cfg *cfg, int mode,
+                                           const char *model_rel, int remote,
+                                           int dspark_enabled, char *err, size_t errsz) {
+    if (!native_launch_mode_supported(mode, model_rel, remote, err, errsz))
+        return "unsupported_model_mode";
+    if (!remote) {
+        const int qwen35 = model_file_is_qwen35(model_rel);
+        const int qwen38 = model_file_is_qwen38(model_rel);
+#ifndef __APPLE__
+        if (qwen35 || qwen38) {
+            snprintf(err, errsz, "This Qwen integration currently requires the macOS Metal backend");
+            return "unsupported_backend";
+        }
+#endif
+        if ((qwen35 || qwen38) != selected_checkout_is_qwen() ||
+            qwen35 != selected_checkout_is_qwen35()) {
+            snprintf(err, errsz, "Qwen requires its matching Qwen engine; choose the model from the model menu");
+            return "engine_model_mismatch";
+        }
+        if (!file_present(model_rel)) {
+            snprintf(err, errsz, "The selected model file is missing. Select an installed model.");
+            return "model_unavailable";
+        }
+        if (qwen38 && !file_present(MODEL_QWEN_PLE)) {
+            snprintf(err, errsz, "Qwen requires its matching PLE file; finish download-model.sh qwen38-q4k");
+            return "model_component_missing";
+        }
+        if (dspark_enabled && !file_present(dspark_rel_for_model(model_rel))) {
+            snprintf(err, errsz, "DSpark requires the support GGUF matching the selected model; download it from Settings first");
+            return "model_component_missing";
+        }
+    }
+    char reason[192];
+    if (model_ssd_streaming(cfg, remote, model_rel, dspark_enabled,
+                            reason, sizeof reason, err, errsz) < 0)
+        return "unsupported_memory_mode";
+    return NULL;
 }
 
 static int cfg_ssd_streaming(const engine_cfg *cfg, int remote_model,
@@ -3029,25 +3150,24 @@ static int web_dir_valid(void) {
 }
 
 /* Originals ship with the app; incomplete assets never trigger a download. */
-static int design_systems_installed_count(void) {
-    if (!g_web_dir[0]) return 0;
+static int design_system_pack_available(const char *id) {
+    if (!g_web_dir[0] || !dstudio_design_system_supported(id)) return 0;
     const char *files[] = { "DESIGN.md", "tokens.css", "components.html",
                            "assets/preview.js", "references/recipes.md", NULL };
-    int count = 0;
-    for (int i = 0; dstudio_design_system_ids[i]; i++) {
-        int complete = 1;
-        for (int j = 0; files[j]; j++) {
-            char p[DSTUDIO_PATH_MAX];
-            int n = snprintf(p, sizeof p, "%s/extension/design-systems/%s/%s",
-                             g_web_dir, dstudio_design_system_ids[i], files[j]);
-            struct stat st;
-            if (n < 0 || (size_t)n >= sizeof p || stat(p, &st) != 0 ||
-                !S_ISREG(st.st_mode) || st.st_size <= 0 || access(p, R_OK) != 0) {
-                complete = 0; break;
-            }
-        }
-        count += complete;
+    for (int j = 0; files[j]; j++) {
+        char p[DSTUDIO_PATH_MAX];
+        int n = snprintf(p, sizeof p, "%s/extension/design-systems/%s/%s",
+                         g_web_dir, id, files[j]);
+        struct stat st;
+        if (n < 0 || (size_t)n >= sizeof p || stat(p, &st) != 0 ||
+            !S_ISREG(st.st_mode) || st.st_size <= 0 || access(p, R_OK) != 0) return 0;
     }
+    return 1;
+}
+static int design_systems_installed_count(void) {
+    int count = 0;
+    for (int i = 0; dstudio_design_system_ids[i]; i++)
+        count += design_system_pack_available(dstudio_design_system_ids[i]);
     return count;
 }
 static int content_present(void) {
@@ -3680,6 +3800,8 @@ static void set_stage(const char *stage, int pct) {
 
 /* Maps an engine log line to a loading milestone. */
 static void progress_from_line(const char *line) {
+    /* Logs already in the pipe do not regain authority after cancellation. */
+    if (g_child_stop_requested) return;
     if (g_ready) return;
     int prefill_done = 0, prefill_total = 0;
     long status_done = 0, status_total = 0;
@@ -3746,7 +3868,7 @@ static void scan_lines(const char *data, size_t n, char *acc, size_t *acc_len, i
                     !(strstr(acc, "\"type\":\"status\"") &&
                       strstr(acc, "\"state\":\"prefill\"")))
                     snprintf(g_last_engine_line, sizeof g_last_engine_line, "%s", acc);
-                if (is_err && strstr(acc, "+DWARFSTAR_WAITING")) {
+                if (is_err && !g_child_stop_requested && strstr(acc, "+DWARFSTAR_WAITING")) {
                     set_stage("Ready", 100);
                     g_ready = 1;
                     maybe_complete_launch_task(g_mode);
@@ -3917,8 +4039,25 @@ static void reap_child(void) {
         }
     }
     if (g_child <= 0) return;
+    if (g_child_stop_requested && g_child_stop_deadline && dstudio_now_ms() >= g_child_stop_deadline) {
+        kill(g_child, SIGKILL);
+        g_child_stop_deadline = 0;
+    }
     int st;
     if (waitpid(g_child, &st, WNOHANG) == g_child) {
+        if (g_child_stop_requested) {
+            g_child = -1;
+            g_child_stop_requested = 0;
+            g_child_stop_deadline = 0;
+#ifdef _WIN32
+            g_child_win_pid = 0;
+#endif
+            close_pipes();
+            g_mode = ENGINE_NONE; g_external_server = 0; g_ready = 0;
+            g_load_pct = 0; g_engine_err[0] = '\0';
+            cstr_copy(g_stage, sizeof g_stage, "Engine stopped");
+            return;
+        }
         int interrupted_exit = g_interrupt_pending &&
             g_last_engine_line[0] &&
             (strstr(g_last_engine_line, "ds4-agent: interrupted") ||
@@ -3984,9 +4123,10 @@ static void close_pipes(void) {
     if (g_err_fd >= 0) { close(g_err_fd); g_err_fd = -1; }
 }
 
-static void stop_child(void) {
+static void request_child_stop(void) {
     sse_close_all();
     if (g_child <= 0) { g_mode = ENGINE_NONE; g_external_server = 0; return; }
+    if (g_child_stop_requested) return;
     printf("engine: stopping pid %d…\n", (int)g_child);
     dstudio_log_event("info", "engine", g_active_turn_task ? g_active_turn_task : g_active_launch_task,
                       "stopping pid %d", (int)g_child);
@@ -4000,23 +4140,21 @@ static void stop_child(void) {
         g_active_launch_mode = ENGINE_NONE;
     }
     kill(g_child, SIGTERM);
-    for (int i = 0; i < 30; i++) {
-        int st;
-        if (waitpid(g_child, &st, WNOHANG) == g_child) { g_child = -1; break; }
-        usleep(100000);
-    }
-    if (g_child > 0) { kill(g_child, SIGKILL); waitpid(g_child, NULL, 0); g_child = -1; }
-#ifdef _WIN32
-    g_child_win_pid = 0;
-#endif
-    close_pipes();
-    g_mode = ENGINE_NONE;
-    g_external_server = 0;
+    g_child_stop_requested = 1;
+    g_child_stop_deadline = dstudio_now_ms() + 3000;
     g_ready = 0;
     g_agent_working = 0;
     g_agent_session_working = 0;
     g_interrupt_pending = 0;
     g_active_turn_compacting = 0;
+    cstr_copy(g_stage, sizeof g_stage, "Stopping the engine…");
+}
+
+/* Only shutdown uses this bounded wait. Interactive callers request a stop
+ * and let the owner reap/escalate it while continuing to serve control traffic. */
+static void stop_child(void) {
+    request_child_stop();
+    while (g_child > 0) { reap_child(); if (g_child > 0) usleep(10000); }
 }
 
 /* Kills the EXTERNAL process holding a port (a ds4-server started outside the
@@ -4111,10 +4249,16 @@ static void child_setenv_metal(const engine_cfg *cfg) {
 /* Metal sources are loaded relative to the cwd (ds4_metal.m). With
  * the agent's --chdir the cwd becomes the project working dir, so they must
  * be forced to absolute via the env overrides, otherwise "metal backend
- * unavailable". (envvar, file) mirror the list in ds4_metal.m. */
+ * unavailable". Cover the union of the pinned forks' required sources; a
+ * fork ignores entries outside its own library. This selects source paths,
+ * not model capabilities (loading a vision shader does not enable vision). */
 static const char *const METAL_SRC[][2] = {
     {"DS4_METAL_FLASH_ATTN_SOURCE", "flash_attn.metal"},
     {"DS4_METAL_DENSE_SOURCE",      "dense.metal"},
+    {"DS4_METAL_GLM53_BF16_SOURCE", "glm53_bf16.metal"},
+    {"DS4_METAL_GLM53_VISION_SOURCE", "glm53_vision.metal"},
+    {"DS4_METAL_DEEPSEEK4_VISION_SOURCE", "deepseek4_vision.metal"},
+    {"DS4_METAL_GLM53_KDA_SOURCE",  "glm53_kda.metal"},
     {"DS4_METAL_MOE_SOURCE",        "moe.metal"},
     {"DS4_METAL_DSV4_HC_SOURCE",    "dsv4_hc.metal"},
     {"DS4_METAL_UNARY_SOURCE",      "unary.metal"},
@@ -4122,6 +4266,10 @@ static const char *const METAL_SRC[][2] = {
     {"DS4_METAL_DSV4_ROPE_SOURCE",  "dsv4_rope.metal"},
     {"DS4_METAL_DSV4_MISC_SOURCE",  "dsv4_misc.metal"},
     {"DS4_METAL_LAGUNA_SOURCE",     "laguna.metal"},
+    {"DS4_METAL_DFLASH_SOURCE",     "dflash.metal"},
+    {"DS4_METAL_QWEN4_SOURCE",      "qwen4.metal"},
+    {"DS4_METAL_QWEN4_VISION_SOURCE", "qwen4_vision.metal"},
+    {"DS4_METAL_QWEN35_SOURCE",     "qwen35.metal"},
     {"DS4_METAL_ARGSORT_SOURCE",    "argsort.metal"},
     {"DS4_METAL_CPY_SOURCE",        "cpy.metal"},
     {"DS4_METAL_CONCAT_SOURCE",     "concat.metal"},
@@ -4159,7 +4307,10 @@ static void user_skills_dir(char *out, size_t outsz) {
 /* Point the engine at user-authored skills and at the separate design-system /
  * craft libraries. There is intentionally no shipped or cybersecurity skill
  * source: skill() resolves only the writable user directory. */
+static void steer_prepare(void);
+static void steer_child_env(void);
 static void child_setenv_skills(void) {
+    steer_child_env();
     if (g_web_dir[0]) {
         char p[1100];
         snprintf(p, sizeof p, "%s/extension", g_web_dir);
@@ -4375,37 +4526,22 @@ static int resolve_dspark_file(char *out, size_t outsz) {
     return 0;
 }
 
-static int spawn_server(const engine_cfg *cfg, char *err, size_t errsz) {
+static int spawn_server_prepared(const engine_cfg *cfg, char *err, size_t errsz,
+                                 launch_prepared *prepared) {
+    if (native_launch_preflight(cfg, ENGINE_SERVER, current_model_rel(), 0,
+                                g_dspark_enabled, err, errsz)) return 0;
     engine_cfg native_cfg;
     if (model_is_qwen35()) {
         native_cfg = *cfg;
         native_cfg.power = 100; /* This fork's Qwen kernels do not implement throttling. */
         cfg = &native_cfg;
     }
-#ifndef __APPLE__
-    if (model_is_qwen35()) {
-        snprintf(err, errsz, "Qwen3.6 currently requires the macOS Metal backend"); return 0;
-    }
-#endif
-    if (model_is_qwen() != selected_checkout_is_qwen() ||
-        model_is_qwen35() != selected_checkout_is_qwen35()) {
-        snprintf(err, errsz, "Qwen requires its matching Qwen engine; choose the model and engine together from the model menu");
-        return 0;
-    }
-    if (model_is_qwen38() && !file_present(MODEL_QWEN_PLE)) {
-        snprintf(err, errsz, "Qwen requires its matching PLE file; finish download-model.sh qwen38-q4k"); return 0;
-    }
 #ifndef _WIN32
     /* A plain upstream `make` can replace the managed server with a binary
      * that does not expose exact decode throughput. Repair that drift before
      * launching Chat instead of silently dropping tok/s from the transcript. */
-    if (!setup_ensure_server_metrics_runtime(err, errsz)) return 0;
+    if (!prepared && !setup_ensure_server_metrics_runtime(err, errsz)) return 0;
 #endif
-    if (!file_present(current_model_rel())) {
-        snprintf(err, errsz, "model %.16s not found in %.180s",
-                 g_variant, g_ds4_dir);
-        return 0;
-    }
     if (port_listening(cfg->port)) {
         snprintf(err, errsz, "port %d already in use: close the other process or change port", cfg->port);
         return 0;
@@ -4413,7 +4549,7 @@ static int spawn_server(const engine_cfg *cfg, char *err, size_t errsz) {
     char kvdir[2048] = "";
     if (!model_is_qwen35()) {
         kv_dir_for_model(current_model_rel(), kvdir, sizeof kvdir);  /* per-model cache */
-        mkpath(kvdir);
+        if (!prepared) mkpath(kvdir);
     }
     if (!cfg_ssd_streaming(cfg, 0, err, errsz)) return 0;
     const char *vision_rel = native_selected_vision_encoder();
@@ -4466,7 +4602,7 @@ static int spawn_server(const engine_cfg *cfg, char *err, size_t errsz) {
     printf("engine: server pid %ld (port %d, windows cpu)\n", (long)pid, cfg->port);
     return 1;
 #else
-    int pld_runtime = run_build_server_pld();
+    int pld_runtime = prepared ? prepared->server_pld : run_build_server_pld();
     if (pld_runtime == 0) {
         snprintf(err, errsz, "could not build Chat prompt lookup patch; check upstream anchors/build output");
         return 0;
@@ -4519,6 +4655,10 @@ static int spawn_server(const engine_cfg *cfg, char *err, size_t errsz) {
            cfg->uncensored ? "uncensored" : "standard");
     return 1;
 #endif
+}
+
+static int spawn_server(const engine_cfg *cfg, char *err, size_t errsz) {
+    return spawn_server_prepared(cfg, err, errsz, NULL);
 }
 
 #include "dstudio_patch.c"
@@ -4602,7 +4742,7 @@ static char *build_skill_sys(int mode) {
         o += (size_t)snprintf(cat + o, catcap - o,
             "## On-demand packs\n\n"
             "Load a user-authored skill or design pack without restarting by calling these tools "
-            "(DSML, exactly like your other tools). You may call multiple `skill` tools "
+            "using the same native tool-call format as your other tools. You may call multiple `skill` tools "
             "in one turn when each pack covers a different concern, but default to one "
             "and cap each user request at three `skill` calls total; never load the same "
             "skill twice:\n\n"
@@ -4695,135 +4835,13 @@ static int engine_metal_source_newer_than(const char *root, const struct stat *b
 #endif
 }
 
-/* copies src->dst preserving the mtime (idempotency relies on the timestamps). */
-static int jsonl_copy_preserve(const char *src, const char *dst) {
-    size_t n;
-    char *b = jsonl_read_file(src, &n);
-    if (!b) return 0;
-    int ok = jsonl_write_file(dst, b, n);
-    free(b);
-    if (!ok) return 0;
-    struct stat st;
-    if (stat(src, &st) == 0) {
-#ifdef _WIN32
-        HANDLE h = CreateFileA(dst, FILE_WRITE_ATTRIBUTES,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h != INVALID_HANDLE_VALUE) {
-            ULONGLONG ticks = ((ULONGLONG)st.st_mtime + 11644473600ULL) * 10000000ULL;
-            FILETIME ft;
-            ft.dwLowDateTime = (DWORD)ticks;
-            ft.dwHighDateTime = (DWORD)(ticks >> 32);
-            SetFileTime(h, NULL, &ft, &ft);
-            CloseHandle(h);
-        }
-#else
-        struct timeval tv[2] = { { st.st_mtime, 0 }, { st.st_mtime, 0 } };
-        utimes(dst, tv);
-#endif
-    }
-    return 1;
-}
 
-/* replaces the single occurrence of find (realloc). 0 if it is not exactly one. */
-static int jsonl_replace_once(char **buf, size_t *len, const char *find, const char *repl) {
-    char *p = strstr(*buf, find);
-    if (!p || strstr(p + 1, find)) return 0;
-    size_t fl = strlen(find), rl = strlen(repl), off = (size_t)(p - *buf);
-    size_t newlen = *len - fl + rl;
-    char *nb = malloc(newlen + 1);
-    if (!nb) return 0;
-    memcpy(nb, *buf, off);
-    memcpy(nb + off, repl, rl);
-    memcpy(nb + off + rl, p + fl, *len - off - fl);
-    nb[newlen] = '\0';
-    free(*buf);
-    *buf = nb; *len = newlen;
-    return 1;
-}
+#include "dstudio_unified_patch.c"
 
-static int patch_count_occurrences(const char *buf, const char *find) {
-    if (!buf || !find || !find[0]) return 0;
-    int cnt = 0;
-    for (const char *q = strstr(buf, find); q; q = strstr(q + 1, find)) cnt++;
-    return cnt;
-}
-
-static void patch_anchor_preview(const char *find, char *preview, size_t preview_len) {
-    size_t k = 0;
-    if (!preview || preview_len == 0) return;
-    for (const char *s = find; s && *s && *s != '\n' && k + 1 < preview_len; s++)
-        preview[k++] = *s;
-    preview[k] = '\0';
-}
-
-/* Select exactly one upstream-shape anchor. Most edits have one canonical
- * anchor; upstream drift and Laguna can provide strict alternative pairs. */
-static int patch_select_edit_variant(ds4ui_patch_edit *edit, const char *buf,
-                                     const char **find, const char **replace,
-                                     const char **find_path, const char **variant,
-                                     int *primary_count, int *modern_count,
-                                     int *laguna_count) {
-    int pc = patch_count_occurrences(buf, edit->find);
-    int mc = edit->modern_find
-           ? patch_count_occurrences(buf, edit->modern_find) : 0;
-    int lc = edit->laguna_find
-           ? patch_count_occurrences(buf, edit->laguna_find) : 0;
-    if (primary_count) *primary_count = pc;
-    if (modern_count) *modern_count = mc;
-    if (laguna_count) *laguna_count = lc;
-    if (pc == 1 && mc == 0 && lc == 0) {
-        *find = edit->find;
-        *replace = edit->replace;
-        *find_path = edit->find_path;
-        *variant = "main";
-        return 1;
-    }
-    if (pc == 0 && mc == 1 && lc == 0) {
-        *find = edit->modern_find;
-        *replace = edit->modern_replace;
-        *find_path = edit->modern_find_path;
-        *variant = "modern";
-        return 1;
-    }
-    if (pc == 0 && mc == 0 && lc == 1) {
-        *find = edit->laguna_find;
-        *replace = edit->laguna_replace;
-        *find_path = edit->laguna_find_path;
-        *variant = "laguna";
-        return 1;
-    }
-    return 0;
-}
-
-static int patch_apply_edits(ds4ui_patch_set *patch, char **buf, size_t *n, const char *src_path) {
-    for (int i = 0; i < patch->count; i++) {
-        ds4ui_patch_edit *edit = &patch->edits[i];
-        const char *find = NULL, *replace = NULL, *find_path = NULL, *variant = NULL;
-        int pc = 0, mc = 0, lc = 0;
-        if (!patch_select_edit_variant(edit, *buf, &find, &replace, &find_path,
-                                       &variant, &pc, &mc, &lc)) {
-            const char *why = (pc + mc + lc) == 0 ? "missing" : "ambiguous";
-            return patch_fail("%s edit %s anchor %s in %s (%s%s%s%s%s)",
-                              patch->name, edit->id, why, src_path,
-                              edit->find_path,
-                              edit->modern_find ? " or " : "",
-                              edit->modern_find ? edit->modern_find_path : "",
-                              edit->laguna_find ? " or " : "",
-                              edit->laguna_find ? edit->laguna_find_path : "");
-        }
-        if (!jsonl_replace_once(buf, n, find, replace)) {
-            return patch_fail("%s edit %s %s anchor replace failed in %s (%s)",
-                              patch->name, edit->id, variant, src_path, find_path);
-        }
-    }
-    return 1;
-}
-
-/* Applies the anchored JSONL patch set; 0 on missing/ambiguous anchor. */
+/* Materialize a complete patch only in a caller-owned derived source. */
 static int jsonl_apply(const char *src_path) {
     size_t n;
-    char *buf = jsonl_read_file(src_path, &n);
+    char *buf = unified_read(src_path, &n);
     if (!buf) return patch_fail("cannot read source for patching: %s", src_path);
     jsonl_normalize_newlines(buf, &n);
     if (strstr(buf, JSONL_MARK)) {
@@ -4832,67 +4850,26 @@ static int jsonl_apply(const char *src_path) {
     }
     ds4ui_patch_set patch;
     if (!patch_load_set(JSONL_PATCH_DIR, &patch)) { free(buf); return 0; }
-    int ok = patch_apply_edits(&patch, &buf, &n, src_path);
+    int ok = patch.unified_count && patch_apply_unified(&patch, &buf, &n, "ds4_agent.c");
     patch_free_set(&patch);
     if (!ok) { free(buf); return 0; }
-    if (!jsonl_insert_remote_agent_fragment(&buf, &n)) {
-        free(buf);
-        return 0;
-    }
     ok = jsonl_write_file(src_path, buf, n);
     if (!ok) patch_fail("cannot write patched source: %s", src_path);
     free(buf);
     return ok;
 }
 
-static int web_cdp_source_has_fix(const char *buf) {
-    return buf &&
-           strstr(buf, "web_open_tab_http_fallback") &&
-           strstr(buf, "Chrome could not create a page target");
-}
-
-static int web_direct_nav_source_has_fix(const char *buf) {
-    return buf &&
-           strstr(buf, "web_open_tab(web, url, &tab, err, err_len)") &&
-           !strstr(buf, "web_open_tab(web, \"about:blank\", &tab, err, err_len)") &&
-           !strstr(buf, "web_cdp_navigate(&ws, url, err, err_len)");
-}
-
-static int web_cdp_apply(char **buf, size_t *n) {
-    if (strstr(*buf, WEB_CDP_MARK) || web_cdp_source_has_fix(*buf))
-        return 1;  /* already patched or integrated upstream */
-    ds4ui_patch_set patch;
-    if (!patch_load_set(WEB_CDP_PATCH_DIR, &patch)) return 0;
-    int ok = patch_apply_edits(&patch, buf, n, "ds4_web.c");
-    patch_free_set(&patch);
-    return ok;
-}
-
-static int web_direct_nav_apply(char **buf, size_t *n) {
-    if (strstr(*buf, WEB_DIRECT_NAV_MARK) || web_direct_nav_source_has_fix(*buf))
-        return 1;
-    ds4ui_patch_set patch;
-    if (!patch_load_set(WEB_DIRECT_NAV_PATCH_DIR, &patch)) return 0;
-    int ok = patch_apply_edits(&patch, buf, n, "ds4_web.c");
-    patch_free_set(&patch);
-    return ok;
-}
-
+/* Web adaptations form one complete delta. Never accept a marker as proof of
+ * a full patch or silently combine a partial legacy edit with a new variant. */
 static int web_cdp_write_temp(const char *src_path, const char *tmp_path) {
     size_t n;
-    char *buf = jsonl_read_file(src_path, &n);
+    char *buf = unified_read(src_path, &n);
     if (!buf) return patch_fail("cannot read source for web patching: %s", src_path);
     jsonl_normalize_newlines(buf, &n);
-    int ok = web_cdp_apply(&buf, &n) &&
-             web_direct_nav_apply(&buf, &n);
-    if (ok) {
-        ds4ui_patch_set patch;
-        ok = patch_load_set(WEB_VISION_PATCH_DIR, &patch);
-        if (ok) {
-            ok = patch_apply_edits(&patch, &buf, &n, "ds4_web.c");
-            patch_free_set(&patch);
-        }
-    }
+    ds4ui_patch_set patch;
+    if (!patch_load_set(WEB_RUNTIME_PATCH_DIR, &patch)) { free(buf); return 0; }
+    int ok = patch_apply_unified(&patch, &buf, &n, "ds4_web.c");
+    patch_free_set(&patch);
     if (ok && !jsonl_write_file(tmp_path, buf, n))
         ok = patch_fail("cannot write patched web helper: %s", tmp_path);
     free(buf);
@@ -4903,133 +4880,40 @@ static void jsonl_unlink_if_exists(const char *path) {
     if (path && path[0]) unlink(path);
 }
 
-static char *jsonl_read_remote_agent_fragment(size_t *len) {
-    ds4ui_patch_set patch;
-    if (!patch_load_set(JSONL_PATCH_DIR, &patch)) return NULL;
-    if (!patch.fragment_path[0]) {
-        patch_free_set(&patch);
-        patch_fail("%s manifest is missing fragment=", JSONL_PATCH_DIR);
-        return NULL;
-    }
-    char path[DSTUDIO_PATH_MAX + 512];
-    cstr_copy(path, sizeof path, patch.fragment_path);
-    patch_free_set(&patch);
-    return patch_read_text(path, len);
-}
-
-static int jsonl_insert_remote_agent_fragment(char **buf, size_t *n) {
-    static const char anchor[] =
-        "static int run_agent_non_interactive(ds4_engine *engine, agent_config *cfg) {\n";
-    if (strstr(*buf, "/*DS4UI_REMOTE_AGENT*/"))
-        return patch_fail("remote agent fragment marker already present in source");
-    size_t frag_len = 0;
-    char *frag = jsonl_read_remote_agent_fragment(&frag_len);
-    if (!frag) return 0;
-    jsonl_normalize_newlines(frag, &frag_len);
-    size_t repl_len = frag_len + strlen(anchor) + 2;
-    char *repl = malloc(repl_len);
-    if (!repl) { free(frag); return patch_fail("out of memory inserting remote agent fragment"); }
-    int k = snprintf(repl, repl_len, "%s\n%s", frag, anchor);
-    free(frag);
-    if (k < 0 || (size_t)k >= repl_len) {
-        free(repl);
-        return patch_fail("remote agent fragment expansion overflow");
-    }
-    int ok = jsonl_replace_once(buf, n, anchor, repl);
-    free(repl);
-    if (!ok)
-        return patch_fail("remote agent fragment anchor missing or ambiguous: run_agent_non_interactive");
-    return ok;
-}
-
-static int patch_check_anchors(ds4ui_patch_set *patch, char **buf, size_t *n, const char *label) {
-    int fails = 0;
-    for (int i = 0; i < patch->count; i++) {
-        ds4ui_patch_edit *edit = &patch->edits[i];
-        const char *find = NULL, *replace = NULL, *find_path = NULL, *variant = NULL;
-        int pc = 0, mc = 0, lc = 0;
-        int selected = patch_select_edit_variant(edit, *buf, &find, &replace,
-                                                 &find_path, &variant, &pc, &mc, &lc);
-        const char *verdict = selected ? "ok"
-                              : ((pc + mc + lc) == 0 ? "MISSING" : "AMBIGUOUS");
-        if (!selected) fails++;
-        char preview[56];
-        patch_anchor_preview(selected ? find : edit->find, preview, sizeof preview);
-        printf("  %s anchor %2d/%d  %-9s  %s%s  [%s%s%s]\n",
-               label, i + 1, patch->count, verdict, preview,
-               strlen(preview) < strlen(selected ? find : edit->find) ? " ..." : "",
-               edit->id, selected ? "/" : "", selected ? variant : "");
-        if (selected && !jsonl_replace_once(buf, n, find, replace)) fails++;
-    }
-    return fails;
-}
-
 static int web_cdp_check_anchors(const char *src_path) {
     size_t n;
-    char *buf = jsonl_read_file(src_path, &n);
+    char *buf = unified_read(src_path, &n);
     if (!buf) { printf("check-anchors: cannot read %s\n", src_path); return -1; }
     jsonl_normalize_newlines(buf, &n);
-    int fails = 0;
-    if (web_cdp_source_has_fix(buf)) {
-        printf("check-anchors: web CDP fix already present upstream\n");
-    } else if (strstr(buf, WEB_CDP_MARK)) {
-        printf("check-anchors: NOTE source already contains %s (already patched?)\n", WEB_CDP_MARK);
-    } else {
-        ds4ui_patch_set patch;
-        if (!patch_load_set(WEB_CDP_PATCH_DIR, &patch)) { free(buf); return -1; }
-        fails += patch_check_anchors(&patch, &buf, &n, "web");
-        patch_free_set(&patch);
-    }
-
-    if (strstr(buf, WEB_DIRECT_NAV_MARK) || web_direct_nav_source_has_fix(buf)) {
-        printf("check-anchors: web direct navigation already present\n");
-    } else {
-        ds4ui_patch_set patch;
-        if (!patch_load_set(WEB_DIRECT_NAV_PATCH_DIR, &patch)) { free(buf); return -1; }
-        fails += patch_check_anchors(&patch, &buf, &n, "web nav");
-        patch_free_set(&patch);
-    }
-    ds4ui_patch_set visual_patch;
-    if (!patch_load_set(WEB_VISION_PATCH_DIR, &visual_patch)) { free(buf); return -1; }
-    fails += patch_check_anchors(&visual_patch, &buf, &n, "web pixels");
-    patch_free_set(&visual_patch);
+    ds4ui_patch_set patch;
+    if (!patch_load_set(WEB_RUNTIME_PATCH_DIR, &patch)) { free(buf); return -1; }
+    int ok = patch_apply_unified(&patch, &buf, &n, "ds4_web.c");
+    patch_free_set(&patch);
     free(buf);
-    printf("check-anchors: web navigation and pixels %s\n", fails ? "would fail" : "ok");
-    return fails;
+    printf("check-anchors: complete unified web patch %s\n", ok ? "ok" : "FAILED");
+    return ok ? 0 : 1;
 }
 
-/* Dry-run for CI: verify every JSONL anchor is present exactly once in src_path
- * WITHOUT modifying it. Prints a per-anchor report; returns the number of
- * anchors that would fail to apply (0 = the patch applies cleanly). */
+/* Read-only compatibility gate; retain the CLI spelling for existing callers. */
 static int jsonl_check_anchors(const char *src_path) {
     size_t n;
-    char *buf = jsonl_read_file(src_path, &n);
+    char *buf = unified_read(src_path, &n);
     if (!buf) { printf("check-anchors: cannot read %s\n", src_path); return -1; }
     jsonl_normalize_newlines(buf, &n);
     if (strstr(buf, JSONL_MARK))
         printf("check-anchors: NOTE source already contains %s (already patched?)\n", JSONL_MARK);
     ds4ui_patch_set patch;
     if (!patch_load_set(JSONL_PATCH_DIR, &patch)) { free(buf); return -1; }
-    int total = patch.count + 1;
-    int fails = patch_check_anchors(&patch, &buf, &n, "jsonl");
-    patch_free_set(&patch);
-    if (jsonl_insert_remote_agent_fragment(&buf, &n)) {
-        printf("  remote fragment     ok         %s/remote-agent.cfrag\n", JSONL_PATCH_DIR);
-    } else {
-        printf("  remote fragment     MISSING    %s/remote-agent.cfrag or run_agent_non_interactive anchor\n",
-               JSONL_PATCH_DIR);
-        fails++;
-    }
-    free(buf);
-    printf("check-anchors: %d/%d ok, %d would fail\n",
-           total - fails, total, fails);
-    return fails;
+    int ok = patch_apply_unified(&patch, &buf, &n, "ds4_agent.c");
+    patch_free_set(&patch); free(buf);
+    printf("check-anchors: complete unified Agent patch %s\n", ok ? "ok" : "FAILED");
+    return ok ? 0 : 1;
 }
 
 /* `make -f - <target>` in the ds4 dir, with the external build.mk on stdin. */
-static int jsonl_make(const char *ds4_abs, const char *target) {
+static int jsonl_make(const char *ds4_abs, const char *target, const char *stage) {
 #ifdef _WIN32
-    (void)ds4_abs; (void)target;
+    (void)ds4_abs; (void)target; (void)stage;
     return 0;
 #else
     size_t makefile_len = 0;
@@ -5044,12 +4928,20 @@ static int jsonl_make(const char *ds4_abs, const char *target) {
         dup2(pp[0], STDIN_FILENO);
         close(pp[0]); close(pp[1]);
         char core_arg[4096], libs_arg[4096], cflags_arg[4096], cc_arg[4096], remote_arg[4096], cowork_arg[4096];
-        char *argv[14];
+        char out_arg[256], agent_arg[256], web_arg[256], server_arg[256];
+        char *argv[16];
         int ai = 0;
         argv[ai++] = "make";
         argv[ai++] = "-f";
         argv[ai++] = "-";
         argv[ai++] = (char *)target;
+        if (stage) {
+            snprintf(out_arg, sizeof out_arg, "JSONL_OUT=%s", stage);
+            snprintf(agent_arg, sizeof agent_arg, "JSONL_AGENT_SRC=%s/ds4_agent.c", stage);
+            snprintf(web_arg, sizeof web_arg, "JSONL_WEB_SRC=%s/ds4_web.c", stage);
+            snprintf(server_arg, sizeof server_arg, "JSONL_SERVER_SRC=%s/ds4_server.c", stage);
+            argv[ai++] = out_arg; argv[ai++] = agent_arg; argv[ai++] = web_arg; argv[ai++] = server_arg;
+        }
         const char *cc = getenv("DS4UI_JSONL_CC");
         const char *cf = getenv("DS4UI_JSONL_CFLAGS");
         const char *co = getenv("DS4UI_JSONL_CORE_OBJS");
@@ -5078,7 +4970,9 @@ static int jsonl_make(const char *ds4_abs, const char *target) {
     free(makefile);
     close(pp[1]);
     int st;
-    if (waitpid(pid, &st, 0) != pid) return patch_fail("waitpid failed for jsonl make: %s", strerror(errno));
+    pid_t waited;
+    do { waited = waitpid(pid, &st, 0); } while (waited < 0 && errno == EINTR);
+    if (waited != pid) return patch_fail("waitpid failed for jsonl make: %s", strerror(errno));
     if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0))
         return patch_fail("jsonl make target failed: %s", target);
     return 1;
@@ -5205,11 +5099,144 @@ static void resolve_ds4_dir(void) {
     fprintf(stderr, "DStudio: ds4 directory not found (%s)\n", g_ds4_dir);
 }
 
-/* "build" | "restore". 1 = ok. Applies the external JSONL patch set (jsonl events
- * + slash command/autosave sessions of the non-interactive loop).
- * All in C: backup .bak, patch, make, restore.
- * Replaces the former extension/jsonl/build-jsonl.sh + inject.py script. */
-static int run_build_jsonl(const char *action) {
+/* A build lock is scoped to one checkout, outside the HTTP owner. Inheritance
+ * is deliberate: killing the builder cannot unlock an executing make/compiler.
+ * Never unlink the lock file: all contenders must lock the same inode. */
+#ifndef _WIN32
+static int jsonl_build_lock(const char *root) {
+    char file[DSTUDIO_PATH_MAX + 64];
+    if ((size_t)snprintf(file, sizeof file, "%s/.ds4ui-native-build.lock", root) >= sizeof file) return -1;
+    int fd = open(file, O_WRONLY | O_CREAT | O_NOFOLLOW, 0600);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+        flock(fd, LOCK_EX | LOCK_NB)) {
+        if (fd >= 0) close(fd);
+        patch_fail("native build is busy or its lock is invalid; existing runtime preserved");
+        return -1;
+    }
+    return fd;
+}
+
+/* Keep the directory identity from creation until publication/cleanup. A
+ * compiler can rename paths; its replacement path never becomes our owner. */
+static int jsonl_open_stage(const char *dir) {
+    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) patch_fail("cannot retain private build directory identity");
+    return fd;
+}
+
+static int jsonl_stage_matches(const char *dir, int fd) {
+    struct stat owned, current;
+    return fd >= 0 && !fstat(fd, &owned) && !lstat(dir, &current) &&
+           S_ISDIR(current.st_mode) && owned.st_dev == current.st_dev &&
+           owned.st_ino == current.st_ino;
+}
+
+/* Design compiles a private source snapshot, including nested GPU headers.
+ * Cleanup stays anchored to retained directory descriptors. A compiler's
+ * replacement path or symlink must never redirect deletion into user data. */
+static void design_clean_entries(int fd, unsigned depth, unsigned *remaining) {
+    if (depth > 16 || !*remaining) return;
+    int copy = dup(fd);
+    DIR *dir = copy >= 0 ? fdopendir(copy) : NULL;
+    if (!dir) { if (copy >= 0) close(copy); return; }
+    struct dirent *entry;
+    while (*remaining && (entry = readdir(dir))) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        --*remaining;
+        struct stat before, after;
+        if (fstatat(fd, entry->d_name, &before, AT_SYMLINK_NOFOLLOW)) continue;
+        if (!S_ISDIR(before.st_mode)) { unlinkat(fd, entry->d_name, 0); continue; }
+        int child = openat(fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (child < 0) continue;
+        if (!fstat(child, &after) && before.st_dev == after.st_dev && before.st_ino == after.st_ino) {
+            design_clean_entries(child, depth + 1, remaining);
+            if (!fstatat(fd, entry->d_name, &after, AT_SYMLINK_NOFOLLOW) &&
+                before.st_dev == after.st_dev && before.st_ino == after.st_ino)
+                unlinkat(fd, entry->d_name, AT_REMOVEDIR);
+        }
+        close(child);
+    }
+    closedir(dir);
+}
+
+static void design_clean_stage(const char *stage, int fd) {
+    if (fd < 0) return;
+    unsigned remaining = 8192;
+    design_clean_entries(fd, 0, &remaining);
+    if (jsonl_stage_matches(stage, fd)) rmdir(stage);
+    close(fd);
+}
+
+/* Abandoned compiler snapshots are evidence, not permission to remove an
+ * arbitrary directory by prefix. Bound their count and ask for inspection
+ * after repeated hard kills, rather than accumulating source trees forever. */
+static int design_stage_capacity(const char *root) {
+    DIR *dir = opendir(root);
+    if (!dir) return 0;
+    struct dirent *entry;
+    unsigned count = 0, visits = 0;
+    while ((entry = readdir(dir))) {
+        if (++visits > 16384) { count = 8; break; }
+        if (!strncmp(entry->d_name, ".ds4ui-design-build-", 20)) count++;
+    }
+    closedir(dir);
+    return count < 8 || patch_fail("too many interrupted Design builds; inspect the retained private snapshots before retrying");
+}
+
+static int design_publish_stage(const char *root, int root_fd, const char *stage, int stage_fd) {
+    if (g_launch_worker_cancel || !jsonl_stage_matches(root, root_fd) ||
+        !jsonl_stage_matches(stage, stage_fd))
+        return patch_fail("Design build owner, checkout or private directory changed; candidate discarded");
+    struct stat receipt;
+    if (fstatat(stage_fd, "prepared.ver", &receipt, AT_SYMLINK_NOFOLLOW))
+        return errno == ENOENT; /* status / already fresh, no candidate */
+    int engine = openat(stage_fd, "engine", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (engine < 0) return patch_fail("private Design engine directory changed");
+    int binary = openat(engine, "ds4-design", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    int stamp = openat(stage_fd, "prepared.ver", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    struct stat executable, ver, target;
+    int ok = binary >= 0 && stamp >= 0 && !fstat(binary, &executable) && !fstat(stamp, &ver) &&
+             S_ISREG(executable.st_mode) && executable.st_nlink == 1 &&
+             executable.st_size > 0 && executable.st_size <= 256 * 1024 * 1024 &&
+             (executable.st_mode & 0111) && S_ISREG(ver.st_mode) && ver.st_nlink == 1 &&
+             ver.st_size > 0 && ver.st_size < 1024;
+    const char *targets[] = {"ds4-design", "ds4-design.ver"};
+    for (unsigned i = 0; ok && i < 2; i++) {
+        int found = fstatat(root_fd, targets[i], &target, AT_SYMLINK_NOFOLLOW);
+        ok = found ? errno == ENOENT : S_ISREG(target.st_mode);
+    }
+    if (ok) ok = !fsync(binary) && !fsync(stamp);
+    if (binary >= 0) close(binary);
+    if (stamp >= 0) close(stamp);
+    /* One atomic executable replacement. A crash before the derived stamp
+     * lands leaves a valid executable, but its digest cannot pass freshness. */
+    if (ok) ok = !renameat(engine, "ds4-design", root_fd, "ds4-design") &&
+                 !renameat(stage_fd, "prepared.ver", root_fd, "ds4-design.ver") && !fsync(root_fd);
+    close(engine);
+    return ok || patch_fail("cannot publish completed Design build; success not recorded");
+}
+
+/* Consumes the retained descriptor. Never follow a replacement path or recurse;
+ * unexpected extra outputs remain for diagnosis instead of unbounded cleanup. */
+static void jsonl_clean_stage(const char *dir, int fd) {
+    if (fd < 0) return;
+    DIR *d = fdopendir(fd);
+    if (!d) { close(fd); return; }
+    struct dirent *de;
+    for (unsigned visited = 0; visited < 128 && (de = readdir(d)); visited++) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        unlinkat(fd, de->d_name, 0); /* directory entries only; symlinks are not followed */
+    }
+    if (jsonl_stage_matches(dir, fd)) rmdir(dir); /* fails for nonempty/unexpected directories */
+    closedir(d);
+}
+#endif
+
+/* "restore" is now a read-only compatibility check. Do not copy a historical
+ * backup over possible contributor edits just because a marker occurs. New
+ * builds produce private sources and no longer need source restoration. */
+static int run_build_jsonl_locked(const char *action) {
 #ifdef _WIN32
     (void)action;
     win_prepare_engine_runtime();
@@ -5221,34 +5248,26 @@ static int run_build_jsonl(const char *action) {
 #else
     char ds4_abs[DSTUDIO_PATH_MAX];
     if (!realpath(g_ds4_dir, ds4_abs)) return 0;
-    char src[DSTUDIO_PATH_MAX + 64], bak[DSTUDIO_PATH_MAX + 64];
-    char web_src[DSTUDIO_PATH_MAX + 64], web_tmp[DSTUDIO_PATH_MAX + 64], web_obj[DSTUDIO_PATH_MAX + 64];
+    char src[DSTUDIO_PATH_MAX + 64];
+    char web_src[DSTUDIO_PATH_MAX + 64];
     char bin[DSTUDIO_PATH_MAX + 64], cowork_bin[DSTUDIO_PATH_MAX + 64], ver[DSTUDIO_PATH_MAX + 64];
     char core_src[DSTUDIO_PATH_MAX + 64], core_hdr[DSTUDIO_PATH_MAX + 64];
     snprintf(src, sizeof src, "%s/ds4_agent.c", ds4_abs);
-    snprintf(bak, sizeof bak, "%s/ds4_agent.c.ds4ui.bak", ds4_abs);
     snprintf(web_src, sizeof web_src, "%s/ds4_web.c", ds4_abs);
-    snprintf(web_tmp, sizeof web_tmp, "%s/ds4_web_ds4ui.c", ds4_abs);
-    snprintf(web_obj, sizeof web_obj, "%s/ds4_web_ds4ui.o", ds4_abs);
     snprintf(bin, sizeof bin, "%s/ds4-agent-jsonl", ds4_abs);
     snprintf(cowork_bin, sizeof cowork_bin, "%s/ds4-cowork", ds4_abs);
     snprintf(ver, sizeof ver, "%s/ds4-agent-jsonl.ver", ds4_abs);
     snprintf(core_src, sizeof core_src, "%s/ds4.c", ds4_abs);
     snprintf(core_hdr, sizeof core_hdr, "%s/ds4.h", ds4_abs);
 
-    jsonl_unlink_if_exists(web_tmp);
-    jsonl_unlink_if_exists(web_obj);
-
-    char *cur = jsonl_read_file(src, NULL);
+    size_t original_size = 0;
+    char *cur = unified_read(src, &original_size);
     if (!cur) return 0;
     int patched = strstr(cur, JSONL_MARK) != NULL;
     free(cur);
 
-    /* crash-clean: source left patched by a crash → restore from the .bak */
-    if (patched) {
-        if (access(bak, R_OK) != 0) return 0;  /* no .bak: do not touch at random */
-        jsonl_copy_preserve(bak, src);
-    }
+    if (patched)
+        return patch_fail("legacy Agent source is already modified; source and backup preserved for verified recovery");
     if (strcmp(action, "restore") == 0) return 1;
 
     /* Apply before checking core mtimes: Agent may be the first runtime built
@@ -5273,34 +5292,71 @@ static int run_build_jsonl(const char *action) {
         !engine_metal_source_newer_than(ds4_abs, &bb) &&
         !engine_metal_source_newer_than(ds4_abs, &cb) &&
         !patch_dir_newer_than(JSONL_PATCH_DIR, bb.st_mtime) &&
-        !patch_dir_newer_than(WEB_CDP_PATCH_DIR, bb.st_mtime) &&
-        !patch_dir_newer_than(WEB_DIRECT_NAV_PATCH_DIR, bb.st_mtime) &&
-        !patch_dir_newer_than(WEB_VISION_PATCH_DIR, bb.st_mtime) &&
+        !patch_dir_newer_than(WEB_RUNTIME_PATCH_DIR, bb.st_mtime) &&
+        !patch_dir_newer_than("extension/remote", bb.st_mtime) &&
         jsonl_sentinel_ok(ver, patch_version)) {
         return 1;
     }
 
-    if (!jsonl_copy_preserve(src, bak)) return 0;
-    if (!web_cdp_write_temp(web_src, web_tmp)) {
-        jsonl_copy_preserve(bak, src);
-        jsonl_unlink_if_exists(web_tmp);
-        return 0;
-    }
-    if (!jsonl_apply(src)) {
-        jsonl_copy_preserve(bak, src);
-        jsonl_unlink_if_exists(web_tmp);
-        jsonl_unlink_if_exists(web_obj);
-        return 0;
-    }
-    int ok = jsonl_make(ds4_abs, "ds4-cowork");
-    jsonl_copy_preserve(bak, src);  /* ALWAYS restore, even if the build fails */
-    jsonl_unlink_if_exists(web_tmp);
-    jsonl_unlink_if_exists(web_obj);
+    /* Invalidating success precedes all fallible build work. A partial linker
+     * output remains private, never replacing a previously working executable. */
+    jsonl_unlink_if_exists(ver);
+    char stage[DSTUDIO_PATH_MAX + 64];
+    snprintf(stage, sizeof stage, "%s/.ds4ui-agent-build-XXXXXX", ds4_abs);
+    if (!mkdtemp(stage)) return patch_fail("cannot create private Agent build directory");
+    int stage_fd = jsonl_open_stage(stage);
+    if (stage_fd < 0) return 0;
+    const char *leaf = strrchr(stage, '/') + 1;
+    char agent_tmp[DSTUDIO_PATH_MAX + 96], web_tmp[DSTUDIO_PATH_MAX + 96];
+    char agent_bin[DSTUDIO_PATH_MAX + 96], staged_cowork[DSTUDIO_PATH_MAX + 96], target[128];
+    snprintf(agent_tmp, sizeof agent_tmp, "%s/ds4_agent.c", stage);
+    snprintf(web_tmp, sizeof web_tmp, "%s/ds4_web.c", stage);
+    snprintf(agent_bin, sizeof agent_bin, "%s/ds4-agent-jsonl", stage);
+    snprintf(staged_cowork, sizeof staged_cowork, "%s/ds4-cowork", stage);
+    snprintf(target, sizeof target, "%s/ds4-cowork", leaf);
+    size_t agent_size = 0, web_size = 0;
+    char *agent_input = unified_read(src, &agent_size);
+    char *web_input = unified_read(web_src, &web_size);
+    int ok = agent_input && web_input &&
+             jsonl_write_file(agent_tmp, agent_input, agent_size) && jsonl_apply(agent_tmp) &&
+             jsonl_write_file(web_tmp, web_input, web_size) && web_cdp_write_temp(web_tmp, web_tmp) &&
+             jsonl_make(ds4_abs, target, leaf);
+    if (ok && (!unified_source_unchanged(src, agent_input, agent_size) ||
+               !unified_source_unchanged(web_src, web_input, web_size)))
+        ok = patch_fail("Agent/web source changed during build; prepared runtimes discarded");
+    free(agent_input); free(web_input);
+    if (ok && !jsonl_stage_matches(stage, stage_fd))
+        ok = patch_fail("private Agent build directory changed; prepared runtimes discarded");
+    struct stat built_agent, built_cowork;
+    if (ok && (lstat(agent_bin, &built_agent) || lstat(staged_cowork, &built_cowork) ||
+               !S_ISREG(built_agent.st_mode) || !S_ISREG(built_cowork.st_mode) ||
+               !built_agent.st_size || !built_cowork.st_size ||
+               access(agent_bin, X_OK) || access(staged_cowork, X_OK)))
+        ok = patch_fail("Agent build did not produce two executable runtime files");
+    if (ok && (rename(agent_bin, bin) || rename(staged_cowork, cowork_bin)))
+        ok = patch_fail("cannot publish completed Agent/Cowork build");
+    jsonl_clean_stage(stage, stage_fd);
     if (ok) {
         char vs[16];
         int vn = snprintf(vs, sizeof vs, "%d\n", patch_version);
-        jsonl_write_file(ver, vs, (size_t)vn);
+        ok = jsonl_write_file(ver, vs, (size_t)vn);
+        if (!ok) patch_fail("cannot record successful Agent/Cowork build");
     }
+    return ok;
+#endif
+}
+
+static int run_build_jsonl(const char *action) {
+#ifdef _WIN32
+    return run_build_jsonl_locked(action);
+#else
+    if (!strcmp(action, "restore")) return run_build_jsonl_locked(action);
+    char root[DSTUDIO_PATH_MAX];
+    if (!realpath(g_ds4_dir, root)) return 0;
+    int lock = jsonl_build_lock(root);
+    if (lock < 0) return 0;
+    int ok = run_build_jsonl_locked(action);
+    close(lock);
     return ok;
 #endif
 }
@@ -5442,6 +5498,7 @@ static void resolve_web_dir(void) {
 
 static int run_ext_script_for_dir(const char *script, const char *action,
                                   const char *checkout_dir) {
+    if (g_launch_worker_cancel) return 0;
 #ifdef _WIN32
     (void)script; (void)action; (void)checkout_dir;
     return file_present("ds4-design.exe");
@@ -5452,16 +5509,51 @@ static int run_ext_script_for_dir(const char *script, const char *action,
     char abs_script[DSTUDIO_PATH_MAX + 1024];
     if (g_web_dir[0]) snprintf(abs_script, sizeof abs_script, "%s/%s", g_web_dir, script);
     else snprintf(abs_script, sizeof abs_script, "%s", script);
+    int design = !strcmp(script, "extension/design/build-design.sh");
+    int build_lock = -1, stage_fd = -1, root_fd = -1;
+    char stage[DSTUDIO_PATH_MAX + 64] = "";
+    if (design) {
+        build_lock = jsonl_build_lock(ds4_abs);
+        if (build_lock < 0) return 0;
+        root_fd = jsonl_open_stage(ds4_abs);
+        snprintf(stage, sizeof stage, "%s/.ds4ui-design-build-XXXXXX", ds4_abs);
+        if (root_fd < 0 || !design_stage_capacity(ds4_abs) || !mkdtemp(stage) ||
+            (stage_fd = jsonl_open_stage(stage)) < 0) {
+            if (root_fd >= 0) close(root_fd);
+            close(build_lock);
+            return 0;
+        }
+    }
     pid_t pid = fork();
-    if (pid < 0) return 0;
+    if (pid < 0) {
+        if (design) { design_clean_stage(stage, stage_fd); close(root_fd); close(build_lock); }
+        return 0;
+    }
     if (pid == 0) {
         setenv("DS4_DIR", ds4_abs, 1);
-        execl("/bin/sh", "sh", abs_script, action, (char *)NULL);
+        if (design) {
+            char descriptor[32];
+            snprintf(descriptor, sizeof descriptor, "%d", build_lock);
+            setenv("DSTUDIO_DESIGN_LOCK_FD", descriptor, 1);
+            setenv("DSTUDIO_DESIGN_STAGE", stage, 1);
+            /* cwd is a retained directory identity on POSIX, unlike a
+             * /dev/fd/N/child pathname (not traversable on macOS devfs). */
+            if (fchdir(stage_fd)) _exit(127);
+        }
+        if (design) execl("/bin/bash", "bash", abs_script, action, (char *)NULL);
+        else execl("/bin/sh", "sh", abs_script, action, (char *)NULL);
         _exit(127);
     }
     int st;
-    if (waitpid(pid, &st, 0) != pid) return 0;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    pid_t waited;
+    do { waited = waitpid(pid, &st, 0); } while (waited < 0 && errno == EINTR);
+    int ok = waited == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    if (design) {
+        if (ok) ok = design_publish_stage(ds4_abs, root_fd, stage, stage_fd);
+        design_clean_stage(stage, stage_fd);
+        close(root_fd); close(build_lock);
+    }
+    return ok;
 #endif
 }
 
@@ -5469,108 +5561,9 @@ static int run_ext_script(const char *script, const char *action) {
     return run_ext_script_for_dir(script, action, g_ds4_dir);
 }
 
-/* Starts the shared structured ds4-agent runtime. Cowork uses the same native
- * tool parser and KV machinery with its own binary name, charter and cache. */
-static int spawn_agent(const engine_cfg *cfg, const char *workdir,
-                       int cowork_mode, char *err, size_t errsz) {
-    if (!g_remote_base_url[0] && (model_is_qwen() || selected_checkout_is_qwen())) {
-        snprintf(err, errsz, "Qwen currently supports Chat/native inference; its structured Agent/Cowork adapter is not implemented");
-        return 0;
-    }
-    const int runtime_mode = cowork_mode ? ENGINE_COWORK : ENGINE_AGENT;
-    const char *runtime_label = cowork_mode ? "cowork" : "agent";
-    int remote_model = g_remote_base_url[0] != '\0';
-    if (!remote_model && !file_present(current_model_rel())) {
-        snprintf(err, errsz, "model %.16s not found in %.180s",
-                 g_variant, g_ds4_dir);
-        return 0;
-    }
-    /* At this point any engine started by us has already been stopped
-     * (api_start calls stop_child first). If the server port still responds,
-     * there is an EXTERNAL ds4-server: ds4's instance-lock forbids two large
-     * processes together, so we refuse with a clear message. */
-    if (!g_remote_base_url[0] && port_listening(ENGINE_DEFAULTS.port)) {
-        snprintf(err, errsz,
-                 "a ds4-server is running outside the launcher (port %d): close it before "
-                 "switching to %s — the instance-lock forbids two large processes",
-                 ENGINE_DEFAULTS.port,
-                 runtime_label);
-        return 0;
-    }
-    /* The current UI consumes structured events exclusively. Building the
-     * derived agent is therefore a launch requirement, not an optional mode. */
-    if (!run_build_jsonl("build")) {
-#ifdef _WIN32
-        if (cowork_mode)
-            snprintf(err, errsz,
-                     "cowork requires the current DStudio Windows runtime "
-                     "(ds4-cowork.exe + ds4-agent-jsonl.ver)");
-        else
-            snprintf(err, errsz,
-                     "agent requires the current DStudio Windows runtime "
-                     "(ds4-agent-jsonl.exe + ds4-agent-jsonl.ver)");
-#else
-        if (cowork_mode)
-            snprintf(err, errsz, "cowork requires the structured ds4-cowork build%s%s",
-                     g_engine_err[0] ? ": " : "", g_engine_err[0] ? g_engine_err : "");
-        else
-            snprintf(err, errsz, "agent requires the structured ds4-agent-jsonl build%s%s",
-                     g_engine_err[0] ? ": " : "", g_engine_err[0] ? g_engine_err : "");
-#endif
-        return 0;
-    }
-#ifdef _WIN32
-    const char *agent_bin = cowork_mode ? "ds4-cowork.exe" : "ds4-agent-jsonl.exe";
-#else
-    const char *agent_bin = cowork_mode ? "ds4-cowork" : "ds4-agent-jsonl";
-#endif
-    if (!file_present(agent_bin)) {
-        snprintf(err, errsz, "%.32s not found in %.150s — build ds4 first (make)", agent_bin, g_ds4_dir);
-        return 0;
-    }
-#ifdef _WIN32
-    int ip[2] = {-1, -1}, op[2] = {-1, -1}, ep[2] = {-1, -1};
-    (void)ip; (void)op; (void)ep;
-#else
-    int ip[2], op[2], ep[2];
-    if (pipe(ip) != 0 || pipe(op) != 0 || pipe(ep) != 0) { snprintf(err, errsz, "pipe failed"); return 0; }
-#endif
-
-    char ctxs[16], pows[16];
-    snprintf(ctxs, sizeof ctxs, "%d", cfg->ctx);
-    snprintf(pows, sizeof pows, "%d", cfg->power);
-    if (!cfg_ssd_streaming(cfg, remote_model, err, errsz)) return 0;
-    char wd[1024];
-    snprintf(wd, sizeof wd, "%s", (workdir && workdir[0]) ? workdir : (getenv("HOME") ? getenv("HOME") : "."));
-
-    /* The agent's --chdir changes cwd BEFORE loading the assets, so both the
-     * model and the Metal sources must be passed as ABSOLUTE paths. */
-    char cand[DSTUDIO_PATH_MAX + 256], model_abs[DSTUDIO_PATH_MAX] = "", ds4_abs[DSTUDIO_PATH_MAX];
-    char vision_abs[DSTUDIO_PATH_MAX] = "";
-    if (!remote_model) {
-        snprintf(cand, sizeof cand, "%s/%s", g_ds4_dir, current_model_rel());
-        if (!realpath(cand, model_abs)) {
-            snprintf(err, errsz, "model not resolvable: %.200s", cand);
-            return 0;
-        }
-        const char *vision_rel = native_selected_vision_encoder();
-        if (vision_rel) {
-            snprintf(cand, sizeof cand, "%s/%s", g_ds4_dir, vision_rel);
-            if (!realpath(cand, vision_abs)) {
-                snprintf(err, errsz, "native vision encoder not resolvable: %.200s", cand);
-                return 0;
-            }
-        }
-    }
-    if (!realpath(g_ds4_dir, ds4_abs)) {
-        snprintf(err, errsz, "ds4 dir not resolvable: %.200s", g_ds4_dir);
-        return 0;
-    }
-
-    /* Built in the parent so the forked child inherits it (used before execv); the
-     * parent frees its copy after the fork. The shared charter + active skill go in
-     * via the agent's own -sys flag — no change to ds4-agent itself. The design-system
-     * (brand) layer is design-only, so it is excluded here (0). */
+static char *build_piped_skill_sys(int runtime_mode) {
+    const int cowork_mode = runtime_mode == ENGINE_COWORK;
+    if (runtime_mode == ENGINE_DESIGN) return build_skill_sys(runtime_mode);
     char *skill_sys = build_skill_sys(runtime_mode);
     if (!cowork_mode) {
         /* Keep Claude-like discovery for direction-sensitive work without
@@ -5641,6 +5634,115 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
         }
     }
 
+    return skill_sys;
+}
+
+
+/* Starts the shared structured ds4-agent runtime. Cowork uses the same native
+ * tool parser and KV machinery with its own binary name, charter and cache. */
+static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
+                                int cowork_mode, char *err, size_t errsz,
+                                launch_prepared *prepared) {
+    const int runtime_mode = cowork_mode ? ENGINE_COWORK : ENGINE_AGENT;
+    if (native_launch_preflight(cfg, runtime_mode, current_model_rel(),
+                                g_remote_base_url[0] != '\0', g_dspark_enabled, err, errsz)) return 0;
+    engine_cfg native_cfg;
+    if (!g_remote_base_url[0] && model_is_qwen35()) {
+        native_cfg = *cfg;
+        /* The CLI accepts --power but qwen35_eval_token does not use the
+         * DeepSeek graph's throttling. Match Chat and report the actual mode. */
+        native_cfg.power = 100;
+        cfg = &native_cfg;
+    }
+    steer_prepare();
+    const char *runtime_label = cowork_mode ? "cowork" : "agent";
+    int remote_model = g_remote_base_url[0] != '\0';
+    /* At this point any engine started by us has already been stopped
+     * (api_start calls stop_child first). If the server port still responds,
+     * there is an EXTERNAL ds4-server: ds4's instance-lock forbids two large
+     * processes together, so we refuse with a clear message. */
+    if (!g_remote_base_url[0] && port_listening(ENGINE_DEFAULTS.port)) {
+        snprintf(err, errsz,
+                 "a ds4-server is running outside the launcher (port %d): close it before "
+                 "switching to %s — the instance-lock forbids two large processes",
+                 ENGINE_DEFAULTS.port,
+                 runtime_label);
+        return 0;
+    }
+    /* The current UI consumes structured events exclusively. Building the
+     * derived agent is therefore a launch requirement, not an optional mode. */
+    if (!prepared && !run_build_jsonl("build")) {
+#ifdef _WIN32
+        if (cowork_mode)
+            snprintf(err, errsz,
+                     "cowork requires the current DStudio Windows runtime "
+                     "(ds4-cowork.exe + ds4-agent-jsonl.ver)");
+        else
+            snprintf(err, errsz,
+                     "agent requires the current DStudio Windows runtime "
+                     "(ds4-agent-jsonl.exe + ds4-agent-jsonl.ver)");
+#else
+        if (cowork_mode)
+            snprintf(err, errsz, "cowork requires the structured ds4-cowork build%s%s",
+                     g_engine_err[0] ? ": " : "", g_engine_err[0] ? g_engine_err : "");
+        else
+            snprintf(err, errsz, "agent requires the structured ds4-agent-jsonl build%s%s",
+                     g_engine_err[0] ? ": " : "", g_engine_err[0] ? g_engine_err : "");
+#endif
+        return 0;
+    }
+#ifdef _WIN32
+    const char *agent_bin = cowork_mode ? "ds4-cowork.exe" : "ds4-agent-jsonl.exe";
+#else
+    const char *agent_bin = cowork_mode ? "ds4-cowork" : "ds4-agent-jsonl";
+#endif
+    if (!file_present(agent_bin)) {
+        snprintf(err, errsz, "%.32s not found in %.150s — build ds4 first (make)", agent_bin, g_ds4_dir);
+        return 0;
+    }
+    char ctxs[16], pows[16];
+    snprintf(ctxs, sizeof ctxs, "%d", cfg->ctx);
+    snprintf(pows, sizeof pows, "%d", cfg->power);
+    if (!cfg_ssd_streaming(cfg, remote_model, err, errsz)) return 0;
+    char wd[1024];
+    snprintf(wd, sizeof wd, "%s", (workdir && workdir[0]) ? workdir : (getenv("HOME") ? getenv("HOME") : "."));
+
+    /* The agent's --chdir changes cwd BEFORE loading the assets, so both the
+     * model and the Metal sources must be passed as ABSOLUTE paths. */
+    char cand[DSTUDIO_PATH_MAX + 256], model_abs[DSTUDIO_PATH_MAX] = "", ds4_abs[DSTUDIO_PATH_MAX];
+    char vision_abs[DSTUDIO_PATH_MAX] = "", ple_abs[DSTUDIO_PATH_MAX] = "";
+    if (!remote_model) {
+        snprintf(cand, sizeof cand, "%s/%s", g_ds4_dir, current_model_rel());
+        if (!realpath(cand, model_abs)) {
+            snprintf(err, errsz, "model not resolvable: %.200s", cand);
+            return 0;
+        }
+        /* Upstream applies --chdir before loading the checkpoint and PLE.
+         * Resolve both against the selected checkout, not the user's workspace.
+         * The preparation worker already captures/revalidates the PLE identity. */
+        if (model_is_qwen38()) {
+            snprintf(cand, sizeof cand, "%s/%s", g_ds4_dir, MODEL_QWEN_PLE);
+            if (!realpath(cand, ple_abs)) {
+                snprintf(err, errsz, "Qwen PLE not resolvable: %.200s", cand);
+                return 0;
+            }
+        }
+        const char *vision_rel = native_selected_vision_encoder();
+        if (vision_rel) {
+            snprintf(cand, sizeof cand, "%s/%s", g_ds4_dir, vision_rel);
+            if (!realpath(cand, vision_abs)) {
+                snprintf(err, errsz, "native vision encoder not resolvable: %.200s", cand);
+                return 0;
+            }
+        }
+    }
+    if (!realpath(g_ds4_dir, ds4_abs)) {
+        snprintf(err, errsz, "ds4 dir not resolvable: %.200s", g_ds4_dir);
+        return 0;
+    }
+
+    char *skill_sys = prepared ? prepared->skill_sys : build_piped_skill_sys(runtime_mode);
+    if (prepared) prepared->skill_sys = NULL;
     char dspark_path[DSTUDIO_PATH_MAX];
     int dspark_on = 0;
     if (g_dspark_enabled && !remote_model) {
@@ -5675,6 +5777,7 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
         argv[n++] = "--cpu";
         if (g_ssd_streaming_effective) argv[n++] = "--ssd-streaming";
         argv[n++] = "-m"; argv[n++] = model_abs;
+        if (ple_abs[0]) { argv[n++] = "--ple"; argv[n++] = ple_abs; }
         if (dspark_on) {
             argv[n++] = "--dspark";
             argv[n++] = "--mtp-model";
@@ -5684,7 +5787,9 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
         }
     }
     argv[n++] = "-c"; argv[n++] = ctxs;
-    if (!model_is_glm() && !model_is_laguna()) { argv[n++] = "--power"; argv[n++] = pows; }
+    if (!model_is_glm() && !model_is_laguna() && (remote_model || !model_is_qwen35())) {
+        argv[n++] = "--power"; argv[n++] = pows;
+    }
     if (vision_abs[0]) { argv[n++] = "--vision"; argv[n++] = vision_abs; }
     argv[n++] = think_flag;
     argv[n++] = "--chdir"; argv[n++] = wd;
@@ -5727,8 +5832,26 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
     g_child_win_pid = g_last_spawn_win_pid;
     free(skill_sys);
 #else
+    /* Allocate transport only after fallible path/prompt preparation. Partial
+     * pipe creation and fork failure must not leak descriptors on repeated starts. */
+    int ip[2] = {-1, -1}, op[2] = {-1, -1}, ep[2] = {-1, -1};
+    if (pipe(ip) != 0 || pipe(op) != 0 || pipe(ep) != 0) {
+        snprintf(err, errsz, "pipe: %s", strerror(errno));
+        for (int i = 0; i < 2; i++) {
+            if (ip[i] >= 0) close(ip[i]);
+            if (op[i] >= 0) close(op[i]);
+            if (ep[i] >= 0) close(ep[i]);
+        }
+        free(skill_sys);
+        return 0;
+    }
     pid_t pid = fork();
-    if (pid < 0) { snprintf(err, errsz, "fork: %s", strerror(errno)); free(skill_sys); return 0; }
+    if (pid < 0) {
+        snprintf(err, errsz, "fork: %s", strerror(errno));
+        close(ip[0]); close(ip[1]); close(op[0]); close(op[1]); close(ep[0]); close(ep[1]);
+        free(skill_sys);
+        return 0;
+    }
     if (pid == 0) {
         if (chdir(g_ds4_dir) != 0) _exit(127);   /* to find ./ds4-agent-jsonl */
         if (!remote_model) {
@@ -5759,6 +5882,7 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
             argv[n++] = "--metal";
             if (g_ssd_streaming_effective) argv[n++] = "--ssd-streaming";
             argv[n++] = "-m"; argv[n++] = model_abs;
+            if (ple_abs[0]) { argv[n++] = "--ple"; argv[n++] = ple_abs; }
             if (dspark_on) {
                 argv[n++] = "--dspark";
                 argv[n++] = "--mtp-model";
@@ -5768,7 +5892,9 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
             }
         }
         argv[n++] = "-c"; argv[n++] = ctxs;
-        if (!model_is_glm() && !model_is_laguna()) { argv[n++] = "--power"; argv[n++] = pows; }
+        if (!model_is_glm() && !model_is_laguna() && (remote_model || !model_is_qwen35())) {
+            argv[n++] = "--power"; argv[n++] = pows;
+        }
         if (vision_abs[0]) { argv[n++] = "--vision"; argv[n++] = vision_abs; }
         argv[n++] = think_flag;
         argv[n++] = "--chdir"; argv[n++] = wd;
@@ -5801,16 +5927,12 @@ static int spawn_agent(const engine_cfg *cfg, const char *workdir,
  * only exits into the workspace passed with --workspace. The source lives in
  * THIS repo (extension/design/ds4_design.c, native \x1e events): the script
  * compiles it in the ds4 repo as an untracked output, without patch or .bak. */
-static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, size_t errsz) {
-    if (!g_remote_base_url[0] && (model_is_qwen() || selected_checkout_is_qwen())) {
-        snprintf(err, errsz, "Qwen currently supports Chat/native inference, not Design"); return 0;
-    }
+static int spawn_design_prepared(const engine_cfg *cfg, const char *workdir,
+                                 char *err, size_t errsz, launch_prepared *prepared) {
+    if (native_launch_preflight(cfg, ENGINE_DESIGN, current_model_rel(),
+                                g_remote_base_url[0] != '\0', g_dspark_enabled, err, errsz)) return 0;
+    steer_prepare();
     int remote_model = g_remote_base_url[0] != '\0';
-    if (!remote_model && !file_present(current_model_rel())) {
-        snprintf(err, errsz, "model %.16s not found in %.180s",
-                 g_variant, g_ds4_dir);
-        return 0;
-    }
     if (!remote_model && port_listening(ENGINE_DEFAULTS.port)) {
         snprintf(err, errsz,
                  "a ds4-server is running outside the launcher (port %d): close it before "
@@ -5825,9 +5947,9 @@ static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, s
     }
     win_prepare_engine_runtime();
 #else
-    if (!run_ext_script("scripts/apply-ds4-glm53-m2max.sh", "apply") ||
+    if (!prepared && (!run_ext_script("scripts/apply-ds4-glm53-m2max.sh", "apply") ||
         !run_ext_script("scripts/apply-ds4-vision-streaming.sh", "apply") ||
-        !run_ext_script("extension/design/build-design.sh", "build")) {
+        !run_ext_script("extension/design/build-design.sh", "build"))) {
         snprintf(err, errsz, "build of ds4-design failed (see the serve terminal)");
         return 0;
     }
@@ -5857,7 +5979,8 @@ static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, s
     /* Design receives only compact active-pack bindings here. The complete
      * DESIGN.md/SKILL.md bodies are loaded by native tools on the first turn,
      * so startup does not prefill the whole catalog or selected pack. */
-    char *skill_sys = build_skill_sys(ENGINE_DESIGN);
+    char *skill_sys = prepared ? prepared->skill_sys : build_piped_skill_sys(ENGINE_DESIGN);
+    if (prepared) prepared->skill_sys = NULL;
 
     char dspark_path[DSTUDIO_PATH_MAX];
     int dspark_on = 0;
@@ -6277,6 +6400,18 @@ static void api_model_partials_delete(int fd, const char *body) {
 #endif
 }
 
+/* Legacy installer restart entry points. Interactive /api/start consumes a
+ * prepared candidate instead; setup's own lifecycle is managed separately. */
+static int spawn_agent(const engine_cfg *cfg, const char *workdir, int cowork,
+                       char *err, size_t errsz) {
+    return spawn_agent_prepared(cfg, workdir, cowork, err, errsz, NULL);
+}
+static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, size_t errsz) {
+    return spawn_design_prepared(cfg, workdir, err, errsz, NULL);
+}
+
+#include "dstudio_launch.c"
+
 static void api_status(int fd) {
     reap_child();
     int engine_running = g_child > 0;
@@ -6315,15 +6450,13 @@ static void api_status(int fd) {
             } else if (owner == 0) {
                 /* The previous process died before opening the port. Its lock is now
                  * free, so transparently take over with the saved configuration. */
-                engine_cfg retry_cfg = g_cfg;
                 g_external_server = 0;
                 g_external_wait_started_ms = 0;
-                char retry_err[256] = "";
-                if (spawn_server(&retry_cfg, retry_err, sizeof retry_err)) {
-                    engine_running = 1;
+                if (launch_resume_saved_server()) {
+                    engine_running = 0; /* Preparing is not a running inference process. */
                     if (g_active_launch_task) task_mark_working(g_active_launch_task, "previous DS4 exited; starting replacement engine");
                 } else {
-                    snprintf(g_engine_err, sizeof g_engine_err, "%s", retry_err[0] ? retry_err : "could not start replacement DS4 engine");
+                    snprintf(g_engine_err, sizeof g_engine_err, "could not prepare replacement DS4 engine");
                     snprintf(g_stage, sizeof g_stage, "Could not start the engine");
                     if (g_active_launch_task) {
                         task_mark_failed(g_active_launch_task, g_engine_err, "replacement spawn failed");
@@ -6415,7 +6548,7 @@ static void api_status(int fd) {
     char body[12288];
     snprintf(body, sizeof body,
         "{\"mode\":\"%s\",\"running\":%s,\"ready\":%s,\"loadPct\":%d,\"stage\":\"%s\","
-        "\"agentWorking\":%s,\"agentSessionWorking\":%s,\"workdir\":\"%s\",\"config\":%s,"
+        "\"agentWorking\":%s,\"agentSessionWorking\":%s,\"agentDiskCheckpointsSupported\":%s,\"workdir\":\"%s\",\"config\":%s,"
         "\"ds4dir\":\"%s\",\"ds4dirOk\":%s,\"webdir\":\"%s\",\"webdirOk\":%s,"
         "\"lan\":%s,\"lanAddr\":\"%s\",\"httpPort\":%d,"
         "\"models\":{\"standard\":%s,\"uncensored\":%s},"
@@ -6427,10 +6560,11 @@ static void api_status(int fd) {
         "\"engineError\":\"%s\",\"engineLine\":\"%s\",\"modelFile\":\"%s\",\"skill\":\"%s\",\"designSystem\":\"%s\","
         "\"glmVisionInstalled\":%s,\"deepseekVisionInstalled\":%s,"
         "\"nativeVisionActive\":%s,\"glmVisionActive\":%s,\"deepseekVisionActive\":%s,"
+        "\"launchTaskId\":%llu,\"launchPhase\":\"%s\",\"launchRequestId\":\"%s\","
         "\"contentOk\":%s,\"contentDownloading\":%s}",
         mode_name(g_mode), engine_running ? "true" : "false", g_ready ? "true" : "false",
         g_load_pct, stage_esc, g_agent_working ? "true" : "false",
-        g_agent_session_working ? "true" : "false", wd_esc, cfg,
+        g_agent_session_working ? "true" : "false", agent_disk_checkpoints_supported() ? "true" : "false", wd_esc, cfg,
         d4_esc, ds4_dir_valid() ? "true" : "false", web_esc, web_dir_valid() ? "true" : "false",
         lan_on ? "true" : "false", lan_addr, g_http_port,
         model_present(0) ? "true" : "false", model_present(1) ? "true" : "false",
@@ -6444,6 +6578,9 @@ static void api_status(int fd) {
         native_vision_active ? "true" : "false",
         (native_vision_active && model_is_glm()) ? "true" : "false",
         (native_vision_active && model_is_deepseek_vision()) ? "true" : "false",
+        g_launch ? g_launch->task_id : 0,
+        !g_launch ? "" : g_launch->canceled ? "canceling" : g_launch->stopping ? "stopping" : "preparing",
+        g_launch ? g_launch->request.request_id : "",
         content_present() ? "true" : "false", "false");
     send_json(fd, "200 OK", body);
 }
@@ -7251,6 +7388,8 @@ static void md_catalog(int fd, const char *subdir, const char *file, const char 
                 if (!json_dyn_puts(&body, ",\"outputKinds\":") || !json_dyn_put_escaped(&body, output)) goto oom;
                 if (!json_dyn_puts(&body, ",\"provider\":") || !json_dyn_put_escaped(&body, provider)) goto oom;
                 if (!json_dyn_puts(&body, ",\"upstream\":") || !json_dyn_put_escaped(&body, upstream)) goto oom;
+                if (!strcmp(subdir, "design-systems") &&
+                    !json_dyn_printf(&body, ",\"available\":%s", design_system_pack_available(id) ? "true" : "false")) goto oom;
                 if (!json_dyn_printf(&body,
                                       ",\"hasAssets\":%s,\"hasReferences\":%s,\"hasExample\":%s,\"hasComponents\":%s}",
                                       has_assets ? "true" : "false",
@@ -7262,7 +7401,18 @@ static void md_catalog(int fd, const char *subdir, const char *file, const char 
             closedir(d);
         }
     }
-    if (!json_dyn_puts(&body, "]}")) goto oom;
+    if (!json_dyn_puts(&body, "]")) goto oom;
+    if (!strcmp(subdir, "design-systems")) {
+        /* Supported identity is independent from installed assets. A missing
+         * pack must not be mistaken for a retired user preference. */
+        if (!json_dyn_puts(&body, ",\"catalogIds\":[")) goto oom;
+        for (int i = 0; dstudio_design_system_ids[i]; i++) {
+            if ((i && !json_dyn_puts(&body, ",")) ||
+                !json_dyn_put_escaped(&body, dstudio_design_system_ids[i])) goto oom;
+        }
+        if (!json_dyn_puts(&body, "]")) goto oom;
+    }
+    if (!json_dyn_puts(&body, "}")) goto oom;
     send_json(fd, "200 OK", body.ptr ? body.ptr : "{\"ok\":true}");
     free(body.ptr);
     return;
@@ -7281,6 +7431,7 @@ oom:
 #include "dstudio_task_executor.c"
 #include "dstudio_task_scheduler.c"
 #include "dstudio_task_api.c"
+#include "dstudio_steering.c"
 /* GSA implementation lives with the extension assets. It is included here so
  * DStudio still builds as one C translation unit while keeping GSA ownership
  * under extension/gsa/. */
@@ -7291,8 +7442,6 @@ oom:
 #include "../extension/rsa/dstudio_rsa.cfrag"
 
 static void parse_cfg(const char *body, engine_cfg *cfg, int *bad) {
-    g_metal_hotlist_seed = json_get_bool(body, "metalHotlistSeed");
-    g_dspark_enabled = json_get_bool(body, "dspark");
     long v;
     int m = json_get_model(body, ENGINE_DEFAULTS.uncensored);
     if (m < 0) { *bad = 1; m = ENGINE_DEFAULTS.uncensored; }
@@ -7337,7 +7486,8 @@ static int remote_value_safe(const char *s) {
     return 1;
 }
 
-static int parse_remote_start(const char *body, int allow, char *err, size_t errsz) {
+static int parse_remote_start(const char *body, int allow, remote_start_cfg *out,
+                              char *err, size_t errsz) {
     char backend[32] = "";
     char base[1024] = "";
     char model[128] = "ds4";
@@ -7351,9 +7501,7 @@ static int parse_remote_start(const char *body, int allow, char *err, size_t err
             snprintf(err, errsz, "LAN client Agent/Design requires a remote model host");
             return 0;
         }
-        g_remote_base_url[0] = '\0';
-        g_remote_model[0] = '\0';
-        g_remote_api_key[0] = '\0';
+        memset(out, 0, sizeof *out);
         return 1;
     }
     if (!allow) {
@@ -7386,9 +7534,9 @@ static int parse_remote_start(const char *body, int allow, char *err, size_t err
         snprintf(err, errsz, "remoteApiKey contains invalid characters");
         return 0;
     }
-    snprintf(g_remote_api_key, sizeof g_remote_api_key, "%s", key);
-    snprintf(g_remote_base_url, sizeof g_remote_base_url, "%s", base);
-    snprintf(g_remote_model, sizeof g_remote_model, "%s", model);
+    snprintf(out->api_key, sizeof out->api_key, "%s", key);
+    snprintf(out->base_url, sizeof out->base_url, "%s", base);
+    snprintf(out->model, sizeof out->model, "%s", model);
     return 1;
 }
 
@@ -7401,6 +7549,10 @@ static int launch_workdir_missing(int requested_mode, const char *workdir) {
 }
 
 static void api_start(int fd, const char *body) {
+    if (launch_preparation_busy() || g_child_stop_requested) {
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"launch_busy\",\"error\":\"An engine transition is already in progress. Wait or cancel it first.\"}");
+        return;
+    }
     char mode[16] = "server";
     json_get_string(body, "mode", mode, sizeof mode);
     int want_agent = !strcmp(mode, "agent");
@@ -7419,8 +7571,9 @@ static void api_start(int fd, const char *body) {
         return;
     }
 
+    remote_start_cfg remote = {0};
     char remote_err[256] = "";
-    if (!parse_remote_start(body, want_agent || want_cowork || want_design, remote_err, sizeof remote_err)) {
+    if (!parse_remote_start(body, want_agent || want_cowork || want_design, &remote, remote_err, sizeof remote_err)) {
         char out[512], esc[384];
         json_escape_into(esc, sizeof esc, remote_err, strlen(remote_err));
         snprintf(out, sizeof out, "{\"ok\":false,\"error\":\"%s\"}", esc);
@@ -7445,82 +7598,136 @@ static void api_start(int fd, const char *body) {
         send_json(fd, "400 Bad Request", out);
         return;
     }
-    char launch_title[96];
-    snprintf(launch_title, sizeof launch_title, "Start %s", mode);
-    unsigned long long task_id = task_begin("launch", launch_title, mode, requested_mode, workdir, 0, 1);
-
-    /* Model variant ("flash"|"pro") — picked in the composer. Default stays. */
-    char variant[16] = {0};
-    json_get_string(body, "variant", variant, sizeof variant);
+    /* Preflight owns private values. A rejected request must not change the
+     * running model, credentials, style, or task list. This owner is serial;
+     * publication below is bounded and happens only after validation. */
+    char ds[64], skill[64], variant[16], model_override[1024];
+    cstr_copy(ds, sizeof ds, g_design_system);
+    cstr_copy(skill, sizeof skill, g_skill);
+    cstr_copy(variant, sizeof variant, g_variant);
+    cstr_copy(model_override, sizeof model_override, g_model_override);
+    if (json_get_string(body, "designSystem", ds, sizeof ds) && !strcmp(ds, "none")) ds[0] = '\0';
+    if (ds[0] && !dstudio_design_system_supported(ds)) {
+        send_json(fd, "400 Bad Request", "{\"ok\":false,\"code\":\"invalid_design_system\",\"error\":\"That design system is no longer available. Choose a style in the Design gallery.\"}");
+        return;
+    }
+    if (want_design && ds[0] && !design_system_pack_available(ds)) {
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"design_system_incomplete\",\"error\":\"The selected style has missing or unreadable files. Reinstall DStudio's bundled design systems or choose another style.\"}");
+        return;
+    }
+    char requested_skill[64] = {0};
+    if (json_get_string(body, "skill", requested_skill, sizeof requested_skill)) {
+        if (!requested_skill[0] || !strcmp(requested_skill, "none")) skill[0] = '\0';
+        else if (skill_id_ok(requested_skill)) cstr_copy(skill, sizeof skill, requested_skill);
+    }
+    /* A variant selection clears the explicit GGUF, but only at publication. */
+    const int has_variant = json_get_string(body, "variant", variant, sizeof variant);
     if (!strcmp(variant, "flash") || !strcmp(variant, "pro")) {
-        snprintf(g_variant, sizeof g_variant, "%s", variant);
-        g_model_override[0] = '\0';   /* a variant choice drops any explicit gguf */
+        if (has_variant) model_override[0] = '\0';
+    } else {
+        send_json(fd, "400 Bad Request", "{\"ok\":false,\"error\":\"variant must be flash or pro\"}");
+        return;
     }
     /* Explicit GGUF pick (path relative to the ds4 dir) wins over the variant. */
     char gguf[1024] = {0};
     const int has_explicit_gguf = json_get_string(body, "gguf", gguf, sizeof gguf) && gguf[0];
     if (has_explicit_gguf && !model_file_is_supported(gguf)) {
-        task_mark_failed(task_id, "Choose a supported chat model GGUF", gguf);
         send_json(fd, "400 Bad Request",
                   "{\"ok\":false,\"code\":\"unsupported_model\",\"error\":\"Choose a supported chat model GGUF; engine support files cannot be loaded directly\"}");
         return;
     }
     const int explicit_gguf = has_explicit_gguf &&
         !strstr(gguf, "..") && file_present(gguf);
+    if (has_explicit_gguf && !explicit_gguf) {
+        send_json(fd, "400 Bad Request", "{\"ok\":false,\"code\":\"model_unavailable\",\"error\":\"The selected model file is missing or its path is invalid. Select an installed model.\"}");
+        return;
+    }
     if (explicit_gguf) {
-        snprintf(g_model_override, sizeof g_model_override, "%s", gguf);
+        snprintf(model_override, sizeof model_override, "%s", gguf);
         cfg.uncensored = strstr(gguf, "Abliterated") || strstr(gguf, "uncensored");
-    } else if (cfg.uncensored && strcmp(g_variant, "pro")) {
+    } else if (cfg.uncensored && strcmp(variant, "pro")) {
         /* Preserve the legacy API's explicit model:"uncensored" choice while
          * keeping the ordinary flash variant standard by default. */
-        snprintf(g_model_override, sizeof g_model_override, "%s", MODEL_UNC);
+        snprintf(model_override, sizeof model_override, "%s", MODEL_UNC);
     }
 
     const int requested_ctx = cfg.ctx;
-    const int requested_dspark = g_dspark_enabled;
+    const int requested_dspark = json_get_bool(body, "dspark");
+    int dspark_enabled = requested_dspark;
     const int allow_over_budget_dspark = json_get_bool(body, "allowOverBudgetDspark");
     char config_note[384] = "";
     unsigned long long dspark_required = 0, metal_budget = 0;
-    const int remote_engine = g_remote_base_url[0] && (want_agent || want_cowork || want_design);
-    if (!normalize_flash_memory_config(&cfg, remote_engine, allow_over_budget_dspark,
+    const int remote_engine = remote.base_url[0] && (want_agent || want_cowork || want_design);
+    const char *selected_model = model_override[0] ? model_override : variant_rel(variant);
+    if (!normalize_flash_memory_request(&cfg, remote_engine, selected_model, &dspark_enabled, allow_over_budget_dspark,
                                        config_note, sizeof config_note,
                                        &dspark_required, &metal_budget)) {
-        g_dspark_enabled = requested_dspark;
-        task_mark_canceled(task_id, "Launch paused for DSpark memory confirmation");
         char note_esc[768], out[1280];
         json_escape_into(note_esc, sizeof note_esc, config_note, strlen(config_note));
         snprintf(out, sizeof out,
-                 "{\"ok\":false,\"taskId\":%llu,\"code\":\"dspark_memory_confirmation\","
+                 "{\"ok\":false,\"code\":\"dspark_memory_confirmation\","
                  "\"confirmationRequired\":true,\"requiredBytes\":%llu,\"budgetBytes\":%llu,"
                  "\"error\":\"%s\"}",
-                 task_id, dspark_required, metal_budget, note_esc);
+                 dspark_required, metal_budget, note_esc);
         send_json(fd, "409 Conflict", out);
         return;
     }
-    const int config_adjusted = cfg.ctx != requested_ctx || g_dspark_enabled != requested_dspark;
+    const int config_adjusted = cfg.ctx != requested_ctx || dspark_enabled != requested_dspark;
 
-    /* Active user-created skill for agent/design: injected as -sys at spawn.
-     * Empty or "none" clears it; an unknown/invalid id is ignored (falls back to the
-     * charter only). The key may be absent — then the previous choice is kept. */
-    char skill[64] = {0};
-    if (json_get_string(body, "skill", skill, sizeof skill)) {
-        if (!skill[0] || !strcmp(skill, "none")) g_skill[0] = '\0';
-        else if (skill_id_ok(skill)) snprintf(g_skill, sizeof g_skill, "%s", skill);
+    char capability_err[256] = "";
+    const char *capability_code = native_launch_preflight(&cfg, requested_mode, selected_model,
+        remote_engine, dspark_enabled, capability_err, sizeof capability_err);
+    if (capability_code) {
+        char esc[520], out[720];
+        json_escape_into(esc, sizeof esc, capability_err, strlen(capability_err));
+        snprintf(out, sizeof out,
+                 "{\"ok\":false,\"code\":\"%s\",\"error\":\"%s\"}", capability_code, esc);
+        send_json(fd, "409 Conflict", out);
+        return;
     }
 
-    /* Active design-system (brand) for design mode (extension/design-systems/<id>):
-     * injected as -sys at spawn alongside the skill. Same sanitising as the skill. */
-    char ds[64] = {0};
-    if (json_get_string(body, "designSystem", ds, sizeof ds)) {
-        if (!ds[0] || !strcmp(ds, "none")) g_design_system[0] = '\0';
-        else if (dstudio_design_system_supported(ds)) snprintf(g_design_system, sizeof g_design_system, "%s", ds);
-        else {
-            send_json(fd, "400 Bad Request", "{\"ok\":false,\"error\":\"That design system was retired. Choose Folio, Signal, Forma, Grove or Pulse.\"}");
-            return;
-        }
+    launch_request candidate = {0};
+    char request_id[128] = "";
+    json_get_string(body, "launchRequestId", request_id, sizeof request_id);
+    if (strlen(request_id) >= sizeof candidate.request_id ||
+        strspn(request_id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != strlen(request_id)) {
+        send_json(fd, "400 Bad Request", "{\"ok\":false,\"error\":\"Invalid launch request identity\"}"); return;
     }
+    cstr_copy(candidate.request_id, sizeof candidate.request_id, request_id);
+    candidate.cfg = cfg; candidate.remote = remote; candidate.mode = requested_mode;
+    candidate.force = force; candidate.dspark = dspark_enabled; candidate.adjusted = config_adjusted;
+    candidate.hotlist = json_get_bool(body, "metalHotlistSeed");
+    cstr_copy(candidate.variant, sizeof candidate.variant, variant);
+    cstr_copy(candidate.model, sizeof candidate.model, selected_model);
+    cstr_copy(candidate.skill, sizeof candidate.skill, skill);
+    cstr_copy(candidate.design_system, sizeof candidate.design_system, ds);
+    cstr_copy(candidate.workdir, sizeof candidate.workdir, workdir);
+    cstr_copy(candidate.engine_dir, sizeof candidate.engine_dir, g_ds4_dir);
+    cstr_copy(candidate.assets_dir, sizeof candidate.assets_dir, g_web_dir);
+    cstr_copy(candidate.note, sizeof candidate.note, config_note);
+    launch_begin(fd, &candidate, 0);
+}
 
-    if (g_child > 0) stop_child();
+static void launch_commit(launch_job *j) {
+    const launch_request *r = &j->request;
+    const int fd = j->client, requested_mode = r->mode, force = r->force;
+    const int want_agent = r->mode == ENGINE_AGENT, want_cowork = r->mode == ENGINE_COWORK;
+    const int want_design = r->mode == ENGINE_DESIGN, remote_engine = r->remote.base_url[0] != 0;
+    const int dspark_enabled = r->dspark, config_adjusted = r->adjusted;
+    const char *workdir = r->workdir, *variant = r->variant;
+    const char *model_override = r->model, *skill = r->skill, *ds = r->design_system, *config_note = r->note;
+    const remote_start_cfg remote = r->remote;
+    engine_cfg cfg = r->cfg;
+    cstr_copy(g_variant, sizeof g_variant, variant);
+    cstr_copy(g_model_override, sizeof g_model_override, model_override);
+    cstr_copy(g_skill, sizeof g_skill, skill);
+    cstr_copy(g_design_system, sizeof g_design_system, ds);
+    cstr_copy(g_remote_base_url, sizeof g_remote_base_url, remote.base_url);
+    cstr_copy(g_remote_model, sizeof g_remote_model, remote.model);
+    cstr_copy(g_remote_api_key, sizeof g_remote_api_key, remote.api_key);
+    g_dspark_enabled = dspark_enabled;
+    g_metal_hotlist_seed = r->hotlist;
+    unsigned long long task_id = j->task_id;
 
     /* After stopping our own child, anything still on the engine port is an
      * EXTERNAL ds4-server (started outside the launcher). The instance-lock
@@ -7553,7 +7760,7 @@ static void api_start(int fd, const char *body) {
             send_json(fd, "409 Conflict", out);
             return;
         }
-        if (!kill_external_server(ENGINE_DEFAULTS.port)) {
+        if (port_listening(ENGINE_DEFAULTS.port)) {
             task_mark_failed(task_id, "could not free the engine port", "external ds4-server still listening");
             char out[180];
             snprintf(out, sizeof out,
@@ -7583,10 +7790,10 @@ static void api_start(int fd, const char *body) {
     }
 
     char err[256] = "";
-    int ok = want_agent ? spawn_agent(&cfg, workdir, 0, err, sizeof err)
-           : want_cowork ? spawn_agent(&cfg, workdir, 1, err, sizeof err)
-           : want_design ? spawn_design(&cfg, workdir, err, sizeof err)
-                         : spawn_server(&cfg, err, sizeof err);
+    int ok = want_agent ? spawn_agent_prepared(&cfg, workdir, 0, err, sizeof err, &j->prepared)
+           : want_cowork ? spawn_agent_prepared(&cfg, workdir, 1, err, sizeof err, &j->prepared)
+           : want_design ? spawn_design_prepared(&cfg, workdir, err, sizeof err, &j->prepared)
+                         : spawn_server_prepared(&cfg, err, sizeof err, &j->prepared);
     if (!ok) {
         task_mark_failed(task_id, err[0] ? err : "engine spawn failed", err);
         char out[640], esc[520];
@@ -7613,12 +7820,35 @@ static void api_start(int fd, const char *body) {
 
 static void api_stop(int fd) {
     reap_child();
-    if (g_child <= 0) {
+    int pending = launch_preparation_busy();
+    if (pending) launch_cancel("Engine launch stopped by the user");
+    if (g_child <= 0 && !pending) {
         send_json(fd, "409 Conflict", "{\"ok\":false,\"error\":\"no engine started by DStudio\"}");
         return;
     }
-    stop_child();
-    send_json(fd, "200 OK", "{\"ok\":true}");
+    request_child_stop();
+    send_json(fd, "200 OK", "{\"ok\":true,\"stopping\":true}");
+}
+
+static void api_launch_cancel(int fd, const char *body) {
+    long id = 0;
+    if (json_get_int(body, "taskId", 1, LONG_MAX, &id) <= 0) {
+        send_json(fd, "400 Bad Request", "{\"ok\":false,\"error\":\"A launch taskId is required\"}"); return;
+    }
+    if (!g_launch || g_launch->task_id != (unsigned long long)id) {
+        dstudio_task *task = task_find((unsigned long long)id);
+        if (g_active_launch_task == (unsigned long long)id && g_child > 0 && task &&
+            !strcmp(task->kind, "launch") && task->pid == (int)g_child && !task_status_terminal(task->status)) {
+            request_child_stop();
+            send_json(fd, "200 OK", "{\"ok\":true,\"canceled\":true}"); return;
+        }
+        if (task && !strcmp(task->kind, "launch") && !strcmp(task->status, "canceled")) {
+            send_json(fd, "200 OK", "{\"ok\":true,\"canceled\":true}"); return;
+        }
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"launch_changed\",\"error\":\"That launch is no longer pending\"}"); return;
+    }
+    launch_cancel("Launch preparation canceled by the user");
+    send_json(fd, "200 OK", "{\"ok\":true,\"canceled\":true}");
 }
 
 static void api_agent_send_state_error(int fd, const char *status, const char *msg,
@@ -7928,6 +8158,12 @@ static void api_design_session(int fd, const char *body) {
         snprintf(cmd, sizeof cmd, "/del %s", sha);
     } else {
         send_json(fd, "400 Bad Request", "{\"ok\":false,\"error\":\"unknown action\"}");
+        return;
+    }
+
+    if (strcmp(action, "new") && !agent_disk_checkpoints_supported()) {
+        send_json(fd, "409 Conflict",
+            "{\"ok\":false,\"code\":\"unsupported_session_checkpoint\",\"error\":\"Qwen3.6 cannot save or restore complete disk checkpoints yet. Your conversation is saved separately; live context is retained while the engine runs.\"}");
         return;
     }
 
@@ -10316,6 +10552,24 @@ static int read_request_body_alloc(int fd, const char *req, size_t got, size_t h
 }
 
 static int route_post_api(int fd, const char *path, const char *body) {
+    /* Launch preparation reads these exact assets/checkouts. Other engine
+     * mutations wait for that attempt; status and the current model keep working. */
+    if (launch_preparation_busy() && (!strcmp(path, "/api/engine/checkout") ||
+        !strcmp(path, "/api/webdir") || !strcmp(path, "/api/updates/run") ||
+        !strcmp(path, "/api/ds4/setup") || !strcmp(path, "/api/laguna/setup") ||
+        !strcmp(path, "/api/qwen/setup") || !strcmp(path, "/api/qwen35/setup") ||
+        !strcmp(path, "/api/setup/content") || !strcmp(path, "/api/user-skills") ||
+        !strcmp(path, "/api/user-skills/delete"))) {
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"launch_busy\",\"error\":\"Wait for the pending launch or cancel it before changing engine files\"}"); return 409;
+    }
+    if (g_child_stop_requested && (!strcmp(path, "/api/agent/send") ||
+        !strcmp(path, "/api/agent/steer") || !strcmp(path, "/api/design/session"))) {
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"engine_stopping\",\"error\":\"The engine is stopping\"}"); return 409;
+    }
+    if (!strcmp(path, "/api/start/cancel")) { api_launch_cancel(fd, body); return 200; }
+    if (!strcmp(path, "/api/agent/steer")) { api_steer(fd, body); return 200; }
+    if (!strcmp(path, "/api/agent/steer/status")) { api_steer_status(fd); return 200; }
+    if (!strcmp(path, "/api/agent/steer/pull")) { api_steer_pull(fd, body); return 200; }
     if (path_eq_clean(path, "/api/pdf/evidence")) { api_pdf_evidence(fd, body); return 200; }
     if (!strcmp(path, "/api/task-graph/create") || !strcmp(path, "/api/task-graphs/create")) return api_dtg_create(fd, body);
     if (!strcmp(path, "/api/task-graph/validate") || !strcmp(path, "/api/task-graphs/validate")) return api_dtg_validate(fd, body);
@@ -10740,6 +10994,7 @@ static void handle_connection(int fd) {
     /* fd adopted by the SSE registry: the main loop owns it now */
     if (g_sse_adopt) { g_sse_adopt = 0; free(body_buf); return; }
     if (g_diag_sse_adopt) { g_diag_sse_adopt = 0; free(body_buf); return; }
+    if (g_launch_adopt) { g_launch_adopt = 0; free(body_buf); return; }
 
     /* compact log, I exclude polling so as not to flood the terminal */
     if (strncmp(path, "/api/agent/poll", 15) != 0 && strcmp(path, "/api/status") != 0 &&
@@ -10803,6 +11058,18 @@ int main(int argc, char **argv)
 #else
     setvbuf(stdout, NULL, _IOLBF, 0);   /* launcher log visible line by line */
 #endif
+    /* Resolve once before serving requests; exec'd preparation helpers must
+     * use this exact host build, not PATH or a separately installed bundle. */
+#ifdef __APPLE__
+    { uint32_t cap = sizeof g_launch_executable;
+      if (_NSGetExecutablePath(g_launch_executable, &cap)) g_launch_executable[0] = '\0'; }
+#elif defined(_WIN32)
+    if (!GetModuleFileNameA(NULL, g_launch_executable, sizeof g_launch_executable)) g_launch_executable[0] = '\0';
+#else
+    { ssize_t n = readlink("/proc/self/exe", g_launch_executable, sizeof g_launch_executable - 1);
+      if (n > 0) g_launch_executable[n] = '\0'; else g_launch_executable[0] = '\0'; }
+#endif
+    if (argc > 1 && !strcmp(argv[1], "--prepare-launch")) return launch_prepare_cli(argc, argv);
     /* Batch mode: apply the jsonl patch and build ds4-agent-jsonl, then
      * exit. To test the patch without starting engine/HTTP: ./dstudio --build-jsonl [ds4-dir] */
     if (argc > 1 && strcmp(argv[1], "--build-jsonl") == 0) {
@@ -10815,6 +11082,14 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "--install-engine") == 0)
         return setup_engine_cli(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "--build-design")) {
+        resolve_web_dir();
+        if (argc > 2) { cstr_copy(g_ds4_dir, sizeof g_ds4_dir, argv[2]); g_ds4_dir_explicit = 1; }
+        resolve_ds4_dir();
+        const char *action = argc > 3 ? argv[3] : "build";
+        if (argc > 4 || (strcmp(action, "build") && strcmp(action, "status"))) return 2;
+        return run_ext_script("extension/design/build-design.sh", action) ? 0 : 1;
+    }
     /* Compile only: no model loading, listeners or engine launch. */
     if (argc > 1 && strcmp(argv[1], "--build-server-pld") == 0) {
         resolve_web_dir();
@@ -10949,6 +11224,7 @@ int main(int argc, char **argv)
 
     while (!g_stop) {
         reap_child();
+        launch_preparation_tick();
 #ifndef _WIN32
         gguf_responders_reap();
 #endif
@@ -10969,7 +11245,7 @@ int main(int argc, char **argv)
             drain_child();
 
         /* server readiness via port even without traffic on the pipes */
-        if (g_mode == ENGINE_SERVER && !g_ready && port_listening(g_cfg.port)) {
+        if (g_mode == ENGINE_SERVER && !g_child_stop_requested && !g_ready && port_listening(g_cfg.port)) {
             set_stage("Ready", 100); g_ready = 1; maybe_complete_launch_task(ENGINE_SERVER);
         }
 
@@ -10985,6 +11261,7 @@ int main(int argc, char **argv)
     }
     sse_close_all();
     diag_sse_close_all();
+    launch_preparation_shutdown();
     image_runtime_shutdown();
     video_runtime_shutdown();
     gsa_tools_install_shutdown();

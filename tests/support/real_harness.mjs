@@ -22,6 +22,11 @@ export function artifactDir(name) {
   return dir;
 }
 
+// A retry owns a new directory. Never erase a failed run to prepare the next one.
+export function artifactRunDir(name) {
+  return fs.mkdtempSync(path.join(artifactDir(name), 'run-'));
+}
+
 export function writeArtifact(dir, name, data) {
   mkdirp(dir);
   const body = typeof data === 'string' ? data : JSON.stringify(data, null, 2);

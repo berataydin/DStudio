@@ -7,6 +7,30 @@ downloaded. The integrations below download optional runtimes or model weights
 on demand; their notices and licenses still apply. Downloaded runtimes and
 weights are not committed.
 
+## Qwen3.6 native engine fork
+
+- Source: [`vagrillo/ds4`](https://github.com/vagrillo/ds4/tree/60fca11f0c8b16ca50c757324dddd717ba043098).
+- Pinned revision: `60fca11f0c8b16ca50c757324dddd717ba043098`.
+- Source license: MIT, retaining the ds4.c authors and ggml authors' notices.
+- DStudio's model-catalog correction is shipped as a reversible
+  [patch](patch/ds4-qwen35-catalog/README.md), not an unrecorded fork edit.
+- Its native Agent/Cowork candidate is an explicit
+  [patch](patch/ds4-agent-jsonl/qwen35.patch). The Qwen tool parser is adapted
+  from the MIT-licensed `ivanfioravanti/ds4-metal` source pinned below, using
+  this fork's native ChatML/server format; inference kernels are not replaced.
+- Model weights are downloaded separately and retain their own terms.
+
+## Qwen3.8-Flash-Next native engine fork
+
+- Source: [`ivanfioravanti/ds4-metal`](https://github.com/ivanfioravanti/ds4-metal/tree/66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8).
+- Pinned source: `66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8`.
+- Source license: MIT, retaining upstream ds4.c and ggml notices.
+- DStudio's metadata-only PLE prefetch correction is supplied as a reversible
+  [patch](patch/ds4-qwen38-inspect/README.md). It does not change inference.
+- The structured Agent/Cowork adaptation is an explicit
+  [patch](patch/ds4-agent-jsonl/README.md), applied to private build sources.
+- Main weights and the separate native PLE retain their own model terms.
+
 ## Ideogram 4 FP8 (optional image-generation runtime)
 
 DStudio downloads Ideogram 4 and its runtime on demand; neither code nor model

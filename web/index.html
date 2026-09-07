@@ -8966,6 +8966,7 @@
       </div>
       <div class="loading-foot">
         <span id="loading-privacy">Runs on device · no network calls</span>
+        <button class="btn" id="loading-cancel" type="button" hidden>Cancel launch</button>
         <span class="loading-timing"><span id="loading-elapsed">0:00</span><span class="loading-eta" id="loading-eta">estimating…</span></span>
       </div>
     </div>
@@ -11960,6 +11961,13 @@ Return exactly one complete fenced dstudio-roadmap JSON block and no prose. Neve
       /qwen3\.6-35b-a3b/i.test(String(settings?.modelGguf || settings?.model || ''));
     const localQwenSelected = (settings = Store.getSettings()) =>
       localQwen35Selected(settings) || /qwen3\.8-flash-next/i.test(String(settings?.modelGguf || settings?.model || ''));
+    function selectedAgentDiskCheckpointsExpected(settings = Store.getSettings()) {
+      // Presentation only. The active host capability is checked again before
+      // sending a command or rebinding the conversation to a saved session.
+      const remote = isLanClientMode() ||
+        (settings.chatBackend === 'deepseek' && String(settings.deepseekApiKey || '').trim());
+      return !!remote || !localQwen35Selected(settings);
+    }
     function localSsdStreaming(settings = Store.getSettings()) {
       // Apply a compatible launch value, never overwrite the preference used
       // when the user switches back to DeepSeek. Qwen's PLE stays SSD-backed.
@@ -12030,9 +12038,9 @@ Return exactly one complete fenced dstudio-roadmap JSON block and no prose. Neve
     // Derive {model, kind, quant} from a GGUF filename (shared by onboarding + settings).
     function parseGgufName(file) {
       if (/^Qwen3\.6-35B-A3B-UD-Q6_K_XL\.gguf$/i.test(file))
-        return { model: 'Qwen3.6-35B-A3B', kind: 'Chat/native', quant: 'Q6_K_XL' };
+        return { model: 'Qwen3.6-35B-A3B', kind: 'text', quant: 'Q6_K_XL' };
       if (/qwen3\.8-flash-next-q4kimatrix/i.test(file))
-        return { model: 'Qwen3.8-Flash-Next', kind: 'Chat/native', quant: 'Q4K / MXFP4' };
+        return { model: 'Qwen3.8-Flash-Next', kind: 'text', quant: 'Q4K / MXFP4' };
       const model = /qwen3\.8/i.test(file) ? 'Qwen3.8-Flash-Next'
         : /laguna[-_ ]?s/i.test(file) ? 'Laguna S 2.1'
         : /\bglm[-_ ]?5\.3/i.test(file) ? 'GLM 5.3 Flash'
@@ -12118,8 +12126,8 @@ Return exactly one complete fenced dstudio-roadmap JSON block and no prose. Neve
       { id: 'glm53-q2', label: 'GLM 5.3 Flash · Q2 — ~96.5 GB / 90 GiB', body: { target: 'glm53-q2', engine: 'main' }, match: /^GLM-5\.3-Flash-Q2\.gguf$/i },
       { id: 'glm53-vision', role: 'vision-support', label: 'GLM 5.3 Flash · native vision encoder — ~1.13 GB', body: { target: 'glm53-vision', engine: 'main' }, match: /^GLM-5\.3-Flash-Vision-Encoder\.gguf$/i },
       { id: 'laguna-q4', label: 'Laguna S 2.1 · Q4_K_M — ~68 GB · Metal/full residency', body: { target: 'laguna-q4', engine: 'laguna' }, match: /^laguna-s-2\.1-Q4_K_M\.gguf$/i },
-      { id: 'qwen38-q4k', label: 'Qwen3.8-Flash-Next · Q4_K — 105.4 GB base + PLE · Chat/native', body: { target: 'qwen38-q4k', engine: 'qwen' }, match: /^Qwen3\.8-Flash-Next-Q4KImatrixExperts-MXFP4Down-BF16Emb-BF16Control-Q8GDN-Q8QSA-Q8Shared-Q8Out\.gguf$/i },
-      { id: 'qwen36-q6', label: 'Qwen3.6-35B-A3B · Q6_K_XL — 31.8 GB · Chat/native, Metal, no PLE', body: { target: 'qwen36-q6', engine: 'qwen35' }, match: /^Qwen3\.6-35B-A3B-UD-Q6_K_XL\.gguf$/i },
+      { id: 'qwen38-q4k', label: 'Qwen3.8-Flash-Next · Q4_K — 105.4 GB base + PLE · Chat, Agent, Cowork', body: { target: 'qwen38-q4k', engine: 'qwen' }, match: /^Qwen3\.8-Flash-Next-Q4KImatrixExperts-MXFP4Down-BF16Emb-BF16Control-Q8GDN-Q8QSA-Q8Shared-Q8Out\.gguf$/i },
+      { id: 'qwen36-q6', label: 'Qwen3.6-35B-A3B · Q6_K_XL — 31.8 GB · Chat, Agent, Cowork · Metal, no PLE', body: { target: 'qwen36-q6', engine: 'qwen35' }, match: /^Qwen3\.6-35B-A3B-UD-Q6_K_XL\.gguf$/i },
     ];
     function availableModelDownloads(ggufs) {
       const files = (ggufs || []).map((g) => String(g?.file || ''));
@@ -24172,7 +24180,8 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             { cmd: '/switch ', icon: 'regen', desc: 'Switch to a saved session — /switch <sha>', run: 'fill' },
             { cmd: '/del ', icon: 'bug', desc: 'Delete a saved session — /del <sha>', run: 'fill' },
             { cmd: '/help', icon: 'sliders', desc: 'Show the available commands', run: 'send' },
-          ];
+          ].filter(command => selectedAgentDiskCheckpointsExpected() ||
+            !['/save', '/list', '/switch', '/del'].includes(command.cmd.trim()));
         }
         return [ // chat: prompt shortcuts (ds4-server takes no slash commands)
           { cmd: '/remote', icon: 'panel', desc: 'Share this chat on the LAN at /remote', run: 'send' },
@@ -28839,6 +28848,13 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         if (!r.ok && data && data.ok !== false) data.ok = false;
         return data;
       }
+      async function cancelLaunch(taskId) {
+        const r = await apiFetch('/api/start/cancel', { method: 'POST', headers: H,
+          body: JSON.stringify({ taskId }), signal: AbortSignal.timeout(3000) });
+        const data = await r.json();
+        if (!r.ok) data.ok = false;
+        return data;
+      }
       async function agentSend(prompt, displayPrompt) {
         const body = displayPrompt === undefined ? { prompt } : { prompt, displayPrompt };
         const r = await apiFetch('/api/agent/send', { method: 'POST', headers: H, body: JSON.stringify(body) });
@@ -29177,7 +29193,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         return r.json();
       }
 
-      return { apiUrl, designPreviewUrl, status, doctor, diagnostics, updatesCheck, updatesRun, setIogpuWiredLimit, tasks, task, logs, start, stop, agentSend, agentInterrupt, agentPoll, designSession, designEvents, designState, designArtifacts, designClean, designImport, fsList, fsMkdir, setupDs4, setupLaguna, setupQwen, setupQwen35, setupContent, setWebDir, webSearch, webRead, httpProbe, ggufs, stopModelDownload, openModelFolder, deleteModelPartials, engineCheckouts, setEngineCheckout, designSystems, userSkills, userSkillGet, userSkillSave, userSkillDelete, gsaStart, gsaTools, gsaToolsInstall, gsaPhase, rsaStart, rsaPhase, setLan, setHttpPort, remoteStatus, remoteControl, remoteChatGet, remoteChatPut, lanClientChatsGet, lanClientChatsPut, getStore, putStore, wipe };
+      return { apiUrl, designPreviewUrl, status, doctor, diagnostics, updatesCheck, updatesRun, setIogpuWiredLimit, tasks, task, logs, start, stop, cancelLaunch, agentSend, agentInterrupt, agentPoll, designSession, designEvents, designState, designArtifacts, designClean, designImport, fsList, fsMkdir, setupDs4, setupLaguna, setupQwen, setupQwen35, setupContent, setWebDir, webSearch, webRead, httpProbe, ggufs, stopModelDownload, openModelFolder, deleteModelPartials, engineCheckouts, setEngineCheckout, designSystems, userSkills, userSkillGet, userSkillSave, userSkillDelete, gsaStart, gsaTools, gsaToolsInstall, gsaPhase, rsaStart, rsaPhase, setLan, setHttpPort, remoteStatus, remoteControl, remoteChatGet, remoteChatPut, lanClientChatsGet, lanClientChatsPut, getStore, putStore, wipe };
     })();
 
     /* ==================== Remote LAN chat ==================== */
@@ -30347,8 +30363,12 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             el('code', { text: Store.getState().ui.agentWorkdir || '…' }),
             document.createTextNode('. Commands: '),
             el('span', { class: 'agent-cmds' }, [
-              cmdBtn('/help'), cmdBtn('/list'), cmdBtn('/save'), cmdBtn('/new'), cmdBtn('/compact'),
+              cmdBtn('/help'),
+              ...(selectedAgentDiskCheckpointsExpected() ? [cmdBtn('/list'), cmdBtn('/save')] : []),
+              cmdBtn('/new'), cmdBtn('/compact'),
             ]),
+            !selectedAgentDiskCheckpointsExpected()
+              ? document.createTextNode(' Conversation history is saved; this model cannot restore disk checkpoints yet.') : null,
           ]),
         ]);
       }
@@ -31094,7 +31114,7 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         if (action === 'save') return /session saved|save failed/i.test(text);
         if (action === 'switch') return /switched to|switch failed|usage:\s*\/switch/i.test(text);
         if (action === 'del') return /deleted|delete failed|usage:\s*\/del/i.test(text);
-        if (action === 'new') return /started a new session|new failed/i.test(text);
+        if (action === 'new') return /^(?:started a new session|new session started|new(?: session)? failed(?::|$))/i.test(text);
         return false;
       }
 
@@ -31126,11 +31146,23 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             continue;
           }
 
+          if (request.action !== 'new' && st.agentDiskCheckpointsSupported === false) {
+            return { ok: false, code: 'unsupported_session_checkpoint',
+              error: 'This model cannot save or restore disk checkpoints yet. Your conversation is saved separately; live context is retained while the engine runs.' };
+          }
+
           // Drain the previous turn while it still belongs to its previous
           // conversation, then move ownership atomically to the target. This
           // prevents a late GSA/status tail from landing in a fresh chat.
           try { await poll(); } catch { /* the absolute offset still protects the next poll */ }
-          if (request.targetConvId && Store.getChat(request.targetConvId)) {
+          // Draining can yield to navigation. Recheck before changing the
+          // conversation binding or sending a command from the old view.
+          if (!sessionRequestValid(request))
+            return { ok: false, canceled: true, error: 'session request canceled after view change' };
+          // A reset produces only control receipts. Keep the previous
+          // conversation bound until it succeeds: failed/canceled preparation
+          // retains that engine context and must not attach it to a fresh chat.
+          if (request.action !== 'new' && request.targetConvId && Store.getChat(request.targetConvId)) {
             liveConvId = request.targetConvId;
             Store.setChatMeta(request.targetConvId, { engineLen: since, bufRun: 0 });
           }
@@ -31179,6 +31211,11 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             if (st?.agentWorking !== true) {
               try { await poll(); } catch { /* the periodic poll will retry */ }
               if (activeSessionCommand === command) activeSessionCommand = null;
+              if (!command.error && request.action === 'new' && sessionRequestValid(request) &&
+                  request.targetConvId && Store.getChat(request.targetConvId)) {
+                liveConvId = request.targetConvId;
+                Store.setChatMeta(request.targetConvId, { engineLen: since, bufRun: 0 });
+              }
               return command.error ? { ok: false, error: command.error } : response;
             }
             await new Promise((resolve) => setTimeout(resolve, 250));
@@ -31509,10 +31546,10 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             setTimeout(() => DesignPreview.showOnCanvas(entry), 600);
         }
 
-        // Session events (design only): I pull them out of the delta just received —
-        // like the artifact — so they bind the conv↔KV-session sha and toast ONCE,
-        // without ending up rendered as chat bubbles.
-        if (viewMode === 'design' && delta) drainSessionEvents(delta);
+        // Design and native Qwen runtimes publish session receipts on this
+        // stream. Consume them in every piped mode so a failed reset cannot
+        // be mistaken for success merely because the worker became idle.
+        if (delta) drainSessionEvents(delta);
         return !!delta;
       }
 
@@ -31594,8 +31631,9 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             }
             // after save/switch/new/del the current sha changed: re-pull the
             // list so the binding above sees the fresh `current` flag
-            if (ev.level !== 'error') pullSessionList(command?.targetConvId || liveConvId);
-          } else if (ev.type === 'proposal') {
+            if (viewMode === 'design' && ev.level !== 'error')
+              pullSessionList(command?.targetConvId || liveConvId);
+          } else if (viewMode === 'design' && ev.type === 'proposal') {
             // New multi-direction proposal: reset the choice and re-render
             // (the stepper moves to "proposal", the grid appears in chat).
             currentProposal = { directions: Array.isArray(ev.directions) ? ev.directions : [], lockedTag: null };
@@ -34444,7 +34482,9 @@ Choose however many stages, branches, and topics the subject actually warrants; 
       let overlayProgress, overlaySubline, overlayMeta, overlaySegments, overlaySegmentLabels;
       let overlayGaugeProgress, overlayGaugeProgressBar, overlayGaugeContext, overlayGaugeContextBar;
       let overlayGaugePower, overlayGaugePowerBar, overlayGaugeRuntime, overlayGaugeRuntimeUnit, overlayGaugeRuntimeBar;
-      let overlayRawPreview, overlayRawBody, overlayElapsed, overlayEta, overlayPrivacy;
+      let overlayRawPreview, overlayRawBody, overlayElapsed, overlayEta, overlayPrivacy, overlayCancel;
+      let activeLaunch = null;
+      let overlayHideTimer = null;
       let mode = 'server';
       let chatUiTarget = 'server'; // 'server' (Chat) or 'roadmap'; both use the server engine
       let switching = false;
@@ -34492,6 +34532,24 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         overlayElapsed = qs('#loading-elapsed');
         overlayEta = qs('#loading-eta');
         overlayPrivacy = qs('#loading-privacy');
+        overlayCancel = qs('#loading-cancel');
+        on(overlayCancel, 'click', async () => {
+          const attempt = activeLaunch;
+          if (!attempt?.taskId || attempt.canceling) return;
+          attempt.canceling = true;
+          overlayCancel.disabled = true;
+          overlayCancel.textContent = 'Canceling…';
+          try {
+            const result = await Engine.cancelLaunch(attempt.taskId);
+            if (!result?.ok) throw new Error(result?.error || 'Unable to cancel this launch.');
+          } catch (error) {
+            if (activeLaunch !== attempt) return;
+            attempt.canceling = false;
+            overlayCancel.disabled = false;
+            overlayCancel.textContent = 'Cancel launch';
+            toast(error?.message || 'Unable to contact the launcher.', 'error');
+          }
+        });
 
         on(tabServer, 'click', () => switchTo('server'));
         on(tabAgent, 'click', () => switchTo('agent'));
@@ -35919,14 +35977,49 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         launchTarget = target;
         Statusbar.render();
         showOverlay(target, cfg, title);
+        const requestId = crypto.randomUUID?.() ?? `launch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const attempt = { requestId, taskId: null, canceling: false, preparing: false };
+        activeLaunch = attempt;
         let res;
+        if (activeLaunch !== attempt) return { ok: false, code: 'launch_superseded' };
+        attempt.preparing = true;
+        cfg = { ...cfg, launchRequestId: attempt.requestId };
+        // /api/start owns a pending HTTP reply while the native worker prepares.
+        // Only a matching request identity may expose a cancel button; another
+        // window's pending launch must never be adopted as this attempt.
+        const pollPreparation = async () => {
+          if (activeLaunch !== attempt || !attempt.preparing) return;
+          try {
+            const st = await Engine.status();
+            if (activeLaunch !== attempt || !attempt.preparing) return;
+            if (st.launchRequestId === attempt.requestId && st.launchTaskId) {
+              attempt.taskId = st.launchTaskId;
+              if (overlayCancel) overlayCancel.hidden = false;
+              const phase = st.launchPhase;
+              updateOverlay(0, phase === 'canceling' ? 'Canceling launch…'
+                : phase === 'stopping' ? 'Switching to the prepared runtime…' : 'Preparing the runtime…',
+                phase === 'preparing' && st.running ? 'Your current model is still available.'
+                  : 'Waiting for the launcher to finish this step.');
+            }
+          } catch { /* Keep the pending start; a missed observation is not failure. */ }
+          if (activeLaunch === attempt && attempt.preparing) setTimeout(pollPreparation, 500);
+        };
+        pollPreparation();
         try { res = await Engine.start(cfg, force); }
         catch {
+          if (activeLaunch !== attempt) return { ok: false, code: 'launch_superseded' };
           failOverlay('Unable to contact the launcher (is dstudio.c active?)');
           switching = false;
           launchTarget = null;
           Statusbar.render();
           return { ok: false, error: 'Unable to contact the launcher.' };
+        }
+        finally { attempt.preparing = false; }
+        if (activeLaunch !== attempt) return { ok: false, code: 'launch_superseded' };
+        if (res?.code === 'launch_canceled') {
+          hideOverlay(); switching = false; launchTarget = null; Statusbar.render();
+          toast('Launch canceled.', 'info');
+          return res;
         }
         // DSpark deliberately keeps two heavyweight checkpoints active. If
         // the native preflight estimates that this exceeds the Metal budget,
@@ -35999,6 +36092,8 @@ Choose however many stages, branches, and topics the subject actually warrants; 
           if (res.warning) toast(res.warning, 'warn');
         }
         const launchTaskId = res.taskId || null;
+        attempt.taskId = launchTaskId;
+        if (overlayCancel) overlayCancel.hidden = !launchTaskId;
         if (launchTaskId) appendOverlayLog(`Launch task #${launchTaskId}`);
 
         const t0 = Date.now();
@@ -36015,10 +36110,27 @@ Choose however many stages, branches, and topics the subject actually warrants; 
           }
         };
         const tick = async () => {
+          if (activeLaunch !== attempt) return;
           let st = null;
           try { st = await Engine.status(); lastStatusError = ''; }
           catch (e) { lastStatusError = e?.message || 'status request failed'; }
+          if (activeLaunch !== attempt) return;
           if (st) {
+            if (await launchWasSuperseded()) {
+              if (activeLaunch !== attempt) return;
+              hideOverlay(); switching = false; launchTarget = null; Statusbar.render();
+              if (st.running && st.ready && ['server', 'agent', 'cowork', 'design'].includes(st.mode)) {
+                setMode(st.mode === 'server' ? chatUiTarget : st.mode);
+              }
+              toast('Launch canceled.', 'info');
+              return;
+            }
+            if (activeLaunch !== attempt) return;
+            if (st.launchTaskId === launchTaskId && st.launchPhase) {
+              updateOverlay(0, 'Preparing the runtime…', 'Waiting for the launcher to finish this step.');
+              setTimeout(tick, 500);
+              return;
+            }
             // The asynchronous launch can still report the previous ready
             // model for a poll. That is not completion of this model switch.
             const previousModelReady = st.ready && st.running === true && st.mode === target &&
@@ -36027,19 +36139,6 @@ Choose however many stages, branches, and topics the subject actually warrants; 
             if (!previousModelReady) updateOverlay(st.loadPct, st.stage, st.engineLine || st.engineError || '');
             Store.getState().ui.agentWorkdir = st.workdir || '';
             if (st.ready && (st.mode !== target || st.running !== true || previousModelReady)) {
-              // Another window or a newer launch request may intentionally
-              // supersede this task. The task ring is authoritative: adopt the
-              // newer ready mode instead of showing a false startup failure.
-              if (await launchWasSuperseded()) {
-                hideOverlay();
-                switching = false;
-                launchTarget = null;
-                Statusbar.render();
-                if (st.running && (st.mode === 'server' || st.mode === 'agent' || st.mode === 'cowork' || st.mode === 'design')) {
-                  setMode(st.mode === 'server' ? chatUiTarget : st.mode);
-                }
-                return;
-              }
               if (!previousModelReady) {
                 failOverlay(`${target} did not start${launchTaskId ? ` (task #${launchTaskId})` : ''} — /api/status reports mode=${st.mode || 'unknown'}, running=${st.running === true}, ready=${st.ready === true}${st.engineError ? `, engineError=${st.engineError}` : ''}.`);
                 switching = false;
@@ -36129,6 +36228,13 @@ Choose however many stages, branches, and topics the subject actually warrants; 
       }
 
       function showOverlay(target, cfg, title) {
+        clearTimeout(overlayHideTimer);
+        overlayHideTimer = null;
+        activeLaunch = null;
+        if (overlayCancel) {
+          overlayCancel.hidden = true; overlayCancel.disabled = false;
+          overlayCancel.textContent = 'Cancel launch';
+        }
         overlayCfg = cfg || {};
         overlayStartedAt = Date.now();
         overlayLastPct = 0;
@@ -36218,11 +36324,14 @@ Choose however many stages, branches, and topics the subject actually warrants; 
       }
 
       function failOverlay(msg) {
+        activeLaunch = null;
+        if (overlayCancel) overlayCancel.hidden = true;
         stageEl.textContent = msg;
         stageEl.style.color = 'var(--danger)';
         appendOverlayLog(msg);
         toast(msg, 'error');
-        setTimeout(hideOverlay, 3500);
+        clearTimeout(overlayHideTimer);
+        overlayHideTimer = setTimeout(hideOverlay, 3500);
       }
 
       function appendOverlayLog(msg, tag = '') {
@@ -36245,7 +36354,13 @@ Choose however many stages, branches, and topics the subject actually warrants; 
         if (overlayRawBody) overlayRawBody.textContent = overlayRawLines.join('\n');
       }
 
-      function hideOverlay() { overlay.hidden = true; }
+      function hideOverlay() {
+        clearTimeout(overlayHideTimer);
+        overlayHideTimer = null;
+        activeLaunch = null;
+        if (overlayCancel) overlayCancel.hidden = true;
+        overlay.hidden = true;
+      }
 
       // Attach a folder to the design project: copy its files into the
       // workspace, refresh the file list, and nudge the designer to use them.

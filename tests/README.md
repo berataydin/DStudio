@@ -3,6 +3,116 @@
 Correctness before performance. No test is accepted merely because a function
 name, comment, prompt phrase or CSS declaration occurs in application source.
 
+## Qwen integration and reset regressions
+
+See [the Qwen checkpoint](../docs/QWEN_CHECKPOINT.md) for exact pins, model-free commands, retained failures and remaining coverage. `make test-unified-patch test-agent-build test-launch-preflight test-agent-spawn test-launch-control test-ui-launch` checks the shared patch/build and launch dependencies without loading weights. Compiler/engine responses are simulated where stated by each harness.
+
+## Qwen real host workflows
+
+```sh
+make tests/.build/dstudio-server-test test-qwen38-tool-oracle
+node tests/live/qwen38_host_smoke.mjs ENGINE MODEL_GGUF PLE_GGUF
+# Qwen3.6: no PLE; additionally exercise generation interrupt and a new session:
+node tests/live/qwen38_host_smoke.mjs ENGINE MODEL_GGUF --qwen35 --controls
+# Separate reset lifecycle: visible prefill, cancellation with retained memory,
+# then a successful reset and real tool read. Run one model at a time:
+node tests/live/qwen38_host_smoke.mjs ENGINE MODEL_GGUF --qwen35 --reset-lifecycle
+node tests/live/qwen38_host_smoke.mjs ENGINE MODEL_GGUF PLE_GGUF --reset-lifecycle
+```
+
+Use an already-installed `ds4-qwen38` at pin `66b0e3f`, or `ds4-qwen35` at
+`60fca11f`, with the model (and Qwen3.8 PLE) resolving to its shared model
+store. This runs the real headless HTTP host in a
+private profile: asynchronous launch, the unmodified production Agent/Cowork
+charters, structured tools, exact saved files and readback. Agent uses the
+production automatic Task Graph route, including its actual durable journal.
+Each mode must also remain usable for another read after a rejected Design
+switch; the Agent-to-Cowork transition must replace only the test-owned process.
+
+Runs are sequential with 16k context, thinking/MTP/DSpark off and expert
+streaming off: resident backbone plus native SSD PLE for Qwen3.8, resident
+weights without PLE for Qwen3.6. Sampling remains at the
+production Agent defaults, **not** the fixed seed/temperature of the CLI gate.
+Each workflow is bounded to 12 tool calls and 600 seconds, with bounded logs,
+private KV directories and strict workspace checks. The runner refuses an
+existing inference process; it does not download weights, restart the user's
+app or stop unrelated engines. Requests, answers, process and binary identities,
+source-install receipt and failures remain in `tests/.artifacts/qwen38-host-live/`
+or `tests/.artifacts/qwen35-host-live/`.
+
+`--controls` requires actual generated tokens before sending an interrupt,
+checks the canceled task and the still-running engine, starts a new session
+and requires another real tool read without changing earlier files. Its
+separate deadlines are 120 seconds for generation, 15 for interruption, 600
+for reset and 120 for readback; the 600-second workspace-workflow limit is
+unchanged. Qwen3.6 must reject incomplete disk checkpoints before becoming
+busy and must not create a checkpoint directory. Its requested power of 37
+must be reported as effective native 100, without forwarding `--power`.
+An early terminal reply fails this control gate; bounded follow-up status and
+transcript observations are retained, not used to silently accept the failure.
+
+The complete September 7 Qwen3.8 replay passed both workflows. Its initial Agent
+attempt is retained as a failed test: the grader incorrectly rejected the
+host's `.dstudio/task-graphs/` receipts. The corrected oracle permits only the
+graph IDs reported by the host and checks journal identity, ordering, terminal
+success, file/byte limits and symlink rejection; arbitrary hidden files remain
+forbidden. Separate oracle regressions exercise valid and invalid workspaces.
+This is two real development workflows, not held-out quality, numerical parity,
+foreground desktop coverage or evidence for CUDA/ROCm.
+
+The initial Qwen3.6 host control run remains failed: its workspace operations
+passed, but the counting request ended before interruption could be tested.
+The native Agent/Cowork CLI gate passed separately; it does not override that
+host failure. The complete retry passed Agent and Cowork, including generated
+tokens before interruption, canceled task receipts, new-session completion and
+tool readback. It also exposed delayed native progress while the synchronous
+reset ran. A generation interrupt did not qualify cancellation during reset.
+The separate version-91 reset fix and gate below address that ownership path;
+they do not erase or establish the cause of the initial counting failure.
+
+`make test-qwen-session-reset QWEN35_AGENT_TREE=ENGINE35
+QWEN38_AGENT_TREE=ENGINE38` executes the shipped patches and real native worker
+with simulated inference and deterministic barriers: six Qwen3.6 cases and
+seven Qwen3.8 cases. It checks the command reader remains available, old context
+and attachments survive failure/cancellation, duplicate reset admission fails,
+late cancellation prevents publication and save failure retains the old identity.
+Both original synchronous baselines fail the three shared scenarios. ASan/UBSan
+cover the Agent/helpers, not the already-built engine objects. The observed
+arm64 worker sizes remain 2,144 and 2,184 bytes respectively; candidate session
+count is bounded to one alongside the live session.
+
+`--reset-lifecycle` uses actual weights, a random conversation-only code and a
+task-owned project-memory fixture which forces a genuine prompt-cache miss.
+It must observe prefill while busy, cancel within the existing 15-second
+deadline, receive exactly one native terminal error, and recall the exact code
+without tools. A second reset must complete, emit one success receipt and permit
+a real read without changing prior files. Each reset remains bounded to 600
+seconds; these development replays are not speed or held-out quality benchmarks.
+The memory fixture is model-specific: the Qwen3.8 pin reports progress after
+native 8,192-token chunks, so its fixture must span two chunks; Qwen3.6 reports
+per token. No chunk-size/context override or numerical engine change is used.
+The shared progress oracle requires unfinished work (`0 < done < total`).
+The first Qwen3.8 attempt, `run-uAb5iW`, remains failed: its 4,358-token reset
+completed successfully in one chunk, without an intermediate observation where
+cancellation could be tested. The longer-fixture retry is separate evidence,
+not a retroactive pass or an intra-GPU-kernel cancellation guarantee.
+
+Two initial Qwen3.6 reset replays are retained as failures (`run-KaB607` and
+`run-l76E5r`). Both had correct recall but exposed test-decoder defects: status
+frames interleaved between answer tokens, then the reserved final-line Task
+Graph receipt already hidden by the UI. The shared oracle now decodes those
+transport elements for both Qwen variants before an exact-answer assertion.
+Regressions at every split retain wrong codes, extra prose, repeated receipts
+and malformed frames as failures; an echoed question is never an answer.
+Qwen3.8's second reset attempt (`run-QQtql2`) also remains failed: cancellation
+and recall were correct, but the grader included the native autosave system
+line in the answer. The decoder now removes only that exact terminal shape.
+A regression executes the actual UI `splitUserTurns`/`segmentAgent` functions
+to verify the same text/system separation for correct and wrong answers.
+See [the Qwen checkpoint](../docs/QWEN_CHECKPOINT.md) for final replay results
+and the explicit desktop/quality/backend coverage gaps.
+
+
 Image presets: `make test-image-pipeline` executes the production coordinator
 and shell with explicitly simulated pixels. `make test-image-runtime` compares
 all four presets, seven aspect ratios and every CFG step to the installed
@@ -147,9 +257,11 @@ describe this run, not a universal speed benchmark. The acceptance checks are
 not full-logit comparisons against BF16/CPU, and do not establish general model
 quality, tool-use quality, CUDA parity or exhaustive context-boundary correctness.
 
-Both Qwen integrations currently have **Chat/native inference** integration. Their different tool
-syntax is not yet adapted to DStudio Agent/Cowork/Design, so those modes reject
-them explicitly. Only Qwen3.8 needs the SSD-backed PLE file. Qwen3.6 uses the
+Qwen3.8 has experimental **Chat, Agent and Cowork** integration on macOS Metal
+with the new engine pin. Its Design adapter is not implemented. Qwen3.6 now has
+an experimental **Agent/Cowork host integration**, in
+addition to Chat. Design and forced expert SSD streaming remain rejected
+before stopping the current runtime. Only Qwen3.8 needs the SSD-backed PLE file. Qwen3.6 uses the
 31.8 GB Q6_K_XL file, without PLE or expert SSD streaming. Its disk KV checkpoint
 path is disabled until the fork can serialize its complete recurrent state.
 
@@ -160,13 +272,33 @@ node tests/live/engine_acceptance.mjs --setup --engines main,qwen35
 make test-engine-setup-unit test-qwen35-download
 # Use the empty-model fresh-install path printed by the setup run:
 node tests/integration/qwen35_setup_http_test.mjs path/from-setup-output/fresh-install
-# Explicit, heavyweight; requires installed Qwen3.6 weights. Not run for this integration:
+# Explicit, heavyweight; requires installed Qwen3.6 weights:
 node tests/live/engine_acceptance.mjs --infer --engines qwen35 --via-app
 ```
 
-The integration was checked with real source builds, real setup/catalog/checkout
-HTTP calls and small-file download tests, not real-model inference. The Qwen3.8 published throughput and answer
-results must not be attributed to Qwen3.6.
+The setup gate downloads into an empty private installation and now executes
+both Qwen structured runtimes as well as the native binaries. The HTTP gate
+also repeats the real CLI installation, runs Agent/Cowork `--help`, verifies
+source and binary preservation, checks the declared capability and requires
+the shared weights directory to remain empty. It does not run inference.
+The updated fresh and repeated Qwen3.6 installation gates passed on September 7.
+Qwen3.8 throughput and answer results must not be attributed to Qwen3.6.
+
+The September 7 quality campaign added a native Qwen3.6 inference baseline:
+11/12 development answer/protocol checks passed; its Python filtering answer
+was incorrect (`22` instead of independently executed `16`). The original
+private receipt is `engine-acceptance/run-m8zF5Z/`; this is not held-out quality
+qualification. The same run revealed incorrect DeepSeek aliases in the native
+model catalog, a separate defect now addressed by
+[`ds4-qwen35-catalog`](../patch/ds4-qwen35-catalog/README.md). Fresh and repeated
+Qwen3.6 setup apply the patch before building. Existing checkouts are not
+silently rewritten at every Chat launch; run engine setup to upgrade them.
+
+`make test-qwen35-catalog QWEN35_DIR=/path/to/source` copies the native server
+source, tests the reversible patch lifecycle and compiles its actual HTTP
+catalog serializer. Metadata is controlled and no weights are loaded. Real
+Qwen acceptance separately verifies that `/v1/models` names Qwen correctly;
+that metadata check does not replace or alter the answer checks.
 
 ## Local regression suite
 

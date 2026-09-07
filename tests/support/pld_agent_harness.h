@@ -18,6 +18,7 @@ typedef struct {
 } agent_stream_renderer;
 static int h_stop, h_cancel, h_error, h_switch, h_force, h_cowork, h_mtp;
 static int h_forced;
+static int h_legacy_sampling = 1, h_exact_sampling, h_spec_calls;
 static bool agent_is_cowork_runtime(void) { return h_cowork!=0; }
 static void agent_trace(agent_worker *w,const char *fmt,...) {(void)w;(void)fmt;}
 static void worker_apply_pending_power(agent_worker *w) {(void)w;}
@@ -34,11 +35,19 @@ static bool ds4_token_is_stop_for_think_mode(ds4_engine *e,int t,int m) {
     (void)e;(void)m;return t==7;
 }
 static int ds4_engine_mtp_draft_tokens(ds4_engine *e) {(void)e;return h_mtp?2:0;}
+static bool ds4_engine_mtp_exact_sampling(ds4_engine *e) {(void)e;return h_exact_sampling!=0;}
 static int ds4_session_eval_speculative(ds4_session *s,int t,int max,int eos,
         float temp,int k,float top,float min,uint64_t *rng,int *out,int cap,
         char *err,size_t n) {
-    (void)max;(void)eos;(void)temp;(void)k;(void)top;(void)min;(void)rng;(void)cap;
-    out[0]=t; return ds4_session_eval(s,t,err,n)==0?1:-1;
+    (void)eos;(void)temp;(void)k;(void)top;(void)min;(void)rng;
+    h_spec_calls++;
+    int count = h_mtp < max ? h_mtp : max;
+    if (count > cap) count = cap;
+    for (int i=0; i<count; i++) {
+        out[i]=i ? ds4_session_argmax(s) : t;
+        if (ds4_session_eval(s,out[i],err,n)) return -1;
+    }
+    return count;
 }
 static char *ds4_token_text(ds4_engine *e,int t,size_t *len) {
     (void)e; char *p=malloc(2); assert(p);p[0]=(char)('a'+t);p[1]=0;*len=1;return p;
@@ -72,6 +81,9 @@ static int harness_round(agent_worker *w,agent_config *cfg,int max_tokens) {
     uint64_t rng=123; char err[160]={0}; double t0=0;
     bool got_tool=false,malformed_tool=false,early_tool_error=false;
     agent_dsml_parser dsml={0}; agent_stream_renderer stream={.parser=&dsml};
+    // The old ABI always resampled. The current ABI preserves greedy drafts
+    // and resamples only an exact, nonzero-temperature distribution.
+#define DS4UI_AGENT_PLD_RESAMPLE (h_legacy_sampling || (ds4_engine_mtp_exact_sampling(w->engine) && cfg->gen.temperature > 0.0f))
 #include "../../patch/ds4-agent-jsonl/pld_agent.inc"
     (void)got_tool;(void)malformed_tool;(void)early_tool_error;
     return 0;
@@ -123,4 +135,23 @@ static void agent_loop_tests(void) {
     }
     unsetenv("DS4UI_AGENT_PLD");
     unsetenv("DS4UI_COWORK_PLD");
+    h_legacy_sampling=0;
+    for (int exact=0; exact<2; exact++) for (int sampled=0; sampled<2; sampled++) {
+        reset(&s,&e);reset(&ref,&er);
+        h_stop=h_cancel=h_error=h_force=h_forced=h_cowork=h_spec_calls=0;
+        h_switch=1;h_mtp=3;h_exact_sampling=exact;
+        int history[512]={0};
+        agent_worker w={.engine=&e,.session=&s,.transcript={history,0,512}};
+        agent_config cfg={.gen={.temperature=sampled ? 0.7f : 0,.top_p=1}};
+        CHECK(harness_round(&w,&cfg,5)==0);
+        CHECK(w.emitted==5 && w.transcript.len==5 && !w.failed);
+        for (int i=0;i<5;i++) {
+            CHECK(history[i]==i);
+            CHECK(ds4_session_eval(&ref,i,err,sizeof(err))==0);
+        }
+        same_state(&s,&ref);
+        CHECK(h_spec_calls==(exact && sampled ? 3 : 2));
+        free(s.graph.spec_logits);
+    }
+    h_legacy_sampling=1;h_exact_sampling=h_spec_calls=h_mtp=h_switch=0;
 }

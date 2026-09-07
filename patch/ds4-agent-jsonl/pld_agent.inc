@@ -1,6 +1,9 @@
 #ifndef DS4UI_AGENT_PLD_REWIND
 #define DS4UI_AGENT_PLD_REWIND ds4ui_pld_rewind
 #endif
+#ifndef DS4UI_AGENT_PLD_RESAMPLE
+#define DS4UI_AGENT_PLD_RESAMPLE 1
+#endif
         bool status_greedy_sampling = false;
         ds4ui_pld_index pld = {0};
         const ds4ui_pld_mode pld_mode = ds4ui_pld_mode_for(
@@ -173,7 +176,7 @@
                     break;
                 }
 
-                if (ti + 1 < ntok && next_greedy != greedy_sampling) {
+                if (ti + 1 < ntok && DS4UI_AGENT_PLD_RESAMPLE && next_greedy != greedy_sampling) {
                     /* Later tokens were proposed under the old parser mode.
                      * Re-evaluate this boundary token to restore its logits,
                      * then sample the suffix under the new mode. */
@@ -208,3 +211,4 @@ ds4ui_pld_failed:
                     (unsigned long long)pld.proposed, (unsigned long long)pld.accepted,
                     (unsigned long long)pld.batches, (unsigned long long)pld.fallbacks);
 #undef DS4UI_AGENT_PLD_REWIND
+#undef DS4UI_AGENT_PLD_RESAMPLE

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "currentManifestVersion": 91,
+  "repository": "https://github.com/antirez/ds4",
+  "sourceFile": "ds4_agent.c",
+  "application": "Choose a complete exact-context variant, apply once to a private source copy, then compile with build.mk. Do not edit the upstream Agent file.",
+  "migration": {
+    "fromManifestVersion": 86,
+    "toManifestVersion": 87,
+    "oracle": "Output captured from the version-86 native transformer before its replacement. Expand the one remote-agent.cfrag include to compare bytes; this is a patch migration oracle, not an inference-quality claim.",
+    "sharedInclude": "remote-agent.cfrag",
+    "sharedIncludeSHA256": "a43c7e3e3a1751c24c7bf39190dd741a501cca5f4e6e2ca047b83df2238a00ba",
+    "postMigrationFix": {
+      "patch": "renderer-events-fix.patch",
+      "sha256": "43f533c0e52933bd8eac71410ea46393eac597f4eb9b04022fa2f6edd8b32dc3",
+      "purpose": "The shipped full variants already contain this null-worker fix. Reverse it only in migration tests to compare unchanged frozen version-86 output; never apply it twice in production."
+    }
+  },
+  "bases": [
+    {
+      "name": "main-current",
+      "revision": "c0a6119f363ef82125877142f13fb3fe491cba14",
+      "equivalentSourceRevisions": [
+        "f62ca29a308724cde5bc99134ede19104b2a3260"
+      ],
+      "patch": "main-current.patch",
+      "sourceSHA256": "4402fce6573ffb43332fc9075248f1fc812acb8a503de9ee8a32770b755591cc",
+      "patchSHA256": "909d8f4cd8cb0a11dcf7ca33718438fa171a0c51c85b0290793f2288db961aed",
+      "derivedSHA256": "add4a858f8b492258ef9c0834dbb8093f752b23a84ab452253b4a0710252eea8",
+      "legacyExpandedSHA256": "d9b10bf76da8a201d4a0ccc17a4b0aaf7badc77797da5bcca255be37841197c8",
+      "migrationDerivedSHA256": "4cabac4210f3ae910ff99b6a15462b204099670390e081c4a08ec3ab5f519ae0"
+    },
+    {
+      "name": "main-previous",
+      "revision": "f4d03f6cf9f11c1e7b630bcb160853acfba7c52a",
+      "patch": "main-previous.patch",
+      "sourceSHA256": "95fd4230e1093e1727e468d646c24d3236813ececba10c1e8297827562f174f3",
+      "patchSHA256": "a8c6d5ba93dad4bc13a5eb0b98eb8587dd7ff01fd6dabfe2bfe5aef2b1dc257a",
+      "derivedSHA256": "f159ee681b2718e4c47407c9ac838c7561a4cefec3424ac6bcb18a4f13040a03",
+      "legacyExpandedSHA256": "11836beb9f12231fe2278ba673ebcf6783f9a319f7111cfaa19414ac91d86403",
+      "migrationDerivedSHA256": "cae42f298c82d2fe4e0cc9bec7368dce8ef5460c7dc59ba1c1557ce74834831e"
+    },
+    {
+      "name": "laguna",
+      "revision": "448d5695d1c86401a4e9447c440feb983b73e6de",
+      "patch": "laguna.patch",
+      "sourceSHA256": "44a5b1d149bb3d846c553e42b9f924dd488bf7ec1163c2a82aec1134ddb6bac2",
+      "patchSHA256": "ee420e57b4f1d026436ca3b58f4560d9f79fdd27a17a9e9fbb31f07d2754b5b8",
+      "derivedSHA256": "31335f9783867c1546c9409c211eafc2c26a0e902bcca19ca02449ed84393e93",
+      "legacyExpandedSHA256": "492eb0d4bbff42d6f4fdbbea0dbe7ea1ca2e85d66333ba649b8368d8d3c0bcb6",
+      "migrationDerivedSHA256": "d9ca7b48dbb35b072cc9136ff1d97fc5f0320ba367e46eddf11310dda60c3431"
+    },
+    {
+      "name": "qwen38",
+      "repository": "https://github.com/ivanfioravanti/ds4-metal",
+      "revision": "b4c355079d375d20821ece732e99195c71b32c06",
+      "equivalentSourceRevisions": [
+        "0bb323aa63cf7ed6167ae91a7606e1d875d404a3",
+        "66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8"
+      ],
+      "patch": "qwen38.patch",
+      "sourceSHA256": "aecf46bf84387ea1f77ee2cabec366d0b0dcb5873ce6bb995726e06482e6bff6",
+      "patchSHA256": "d5d8278cd046d9902f1d1ff38c08baee26c8c4bccb482cfa74ca5e80395c4f44",
+      "derivedSHA256": "92bf4220f7f64eda1a2605bd8152b2eca9ba81192f0204feadf62f6b6f490927",
+      "oracle": "Native Qwen protocol/parser tests and DStudio runtime behavior; not a legacy version-86 migration or a model-quality claim."
+    },
+    {
+      "name": "qwen35",
+      "repository": "https://github.com/vagrillo/ds4",
+      "revision": "60fca11f0c8b16ca50c757324dddd717ba043098",
+      "patch": "qwen35.patch",
+      "sourceSHA256": "73cb34e1001e86fa172b69e77a21c0d4e4a9418b751ec0d5b9f08eb0632e52cb",
+      "patchSHA256": "93eb7464bf439ba1f17696f6b28332dc9d12450a643610c2125dfac9fc47ea4c",
+      "derivedSHA256": "3cf0d98ca5dd25f41cf9a6f79aad20b3abe4e07637da84c70b50445b11a448cb",
+      "oracle": "Pinned Qwen3.6 server ChatML/tool grammar and Qwen3.8 native XML parser; explicit native parser/local-tool regressions. Not a version-86 migration, inference-quality result or host capability enablement."
+    }
+  ]
+}

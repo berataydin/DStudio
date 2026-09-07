@@ -554,9 +554,14 @@ static char *ds4ui_remote_tool_result(agent_worker *w,
     return NULL;
 }
 
+static void ds4ui_remote_steer_append(void *owner, const char *text) {
+    ds4ui_msg_list_add(owner, "user", text);
+}
+
 static int ds4ui_remote_run_turn(agent_worker *w,
                                  ds4ui_msg_list *msgs,
                                  const char *user_text) {
+    dstudio_steer steering = dstudio_steer_begin();
     agent_config *cfg = w->cfg;
     ds4ui_msg_list_add(msgs, "user", user_text ? user_text : "");
     if (!w->session_title) {
@@ -575,6 +580,7 @@ static int ds4ui_remote_run_turn(agent_worker *w,
     int tool_error_streak = 0;
     bool forced_plain = false;
     for (;;) {
+        dstudio_steer_drain(&steering, 0, ds4ui_remote_steer_append, msgs);
         bool think_enabled = cfg->gen.think_mode != DS4_THINK_NONE;
         bool use_color = isatty(STDOUT_FILENO) != 0;
         agent_token_renderer renderer = {
@@ -674,6 +680,7 @@ static int ds4ui_remote_run_turn(agent_worker *w,
         free(assistant_raw);
         if (!tool_result) {
             agent_dsml_parser_free(&dsml);
+            if (dstudio_steer_drain(&steering, 1, ds4ui_remote_steer_append, msgs)) continue;
             agent_set_status(w, AGENT_WORKER_IDLE);
             ds4ui_remote_flush(w);
             return 0;

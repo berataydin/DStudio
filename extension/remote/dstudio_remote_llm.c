@@ -11,6 +11,92 @@
 #include <string.h>
 #include <poll.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+
+/* Private loopback protocol, independently bounded from inference traffic.
+ * The host serializes admission and closing: a finishing pull either receives
+ * admitted context or seals the turn BEFORE replying. No late message can
+ * silently become the next turn. CLI runs without these env vars are unchanged.
+ * A missing reply is never retried: delivery may already have happened. */
+static char *steer_exchange(unsigned long long turn, unsigned ack, int finishing) {
+    const char *port = getenv("DSTUDIO_STEER_PORT"), *key = getenv("DSTUDIO_STEER_KEY");
+    if (!port || !key || strlen(key) != 64) return NULL;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return NULL;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+    int yes = 1; setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof yes);
+#endif
+    struct timeval timeout = {2, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET; addr.sin_port = htons((unsigned short)atoi(port));
+    addr.sin_addr.s_addr = htonl(0x7f000001U);
+    char body[180], request[512];
+    int n = snprintf(body, sizeof body, "%s\n%llu\n%u\n%d", key, turn, ack, finishing);
+    int len = snprintf(request, sizeof request,
+        "POST /api/agent/steer/pull HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "X-Requested-With: ds4web\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", n, body);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr)) { close(fd); return NULL; }
+    for (int sent = 0; sent < len;) {
+#ifdef MSG_NOSIGNAL
+        ssize_t wrote = send(fd, request + sent, (size_t)(len - sent), MSG_NOSIGNAL);
+#else
+        ssize_t wrote = send(fd, request + sent, (size_t)(len - sent), 0);
+#endif
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) { close(fd); return NULL; }
+        sent += (int)wrote;
+    }
+    char response[18432]; size_t used = 0;
+    for (;;) {
+        ssize_t got = recv(fd, response + used, sizeof response - used - 1, 0);
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0 || used == sizeof response - 1) { close(fd); return NULL; }
+        if (!got) break;
+        used += (size_t)got;
+    }
+    close(fd); response[used] = 0;
+    char *payload = strstr(response, "\r\n\r\n");
+    if (strncmp(response, "HTTP/1.1 200 ", 13) || !payload) return NULL;
+    /* Exact payload byte count detects truncated successful responses. */
+    char *length = strstr(response, "Content-Length:");
+    if (!length || strtoul(length + 15, NULL, 10) != used - (size_t)(payload + 4 - response)) return NULL;
+    return strdup(payload + 4);
+}
+
+dstudio_steer dstudio_steer_begin(void) {
+    dstudio_steer s = {0};
+    char *reply = steer_exchange(0, 0, 0);
+    if (reply) { s.turn = strtoull(reply, NULL, 10); s.enabled = s.turn != 0; free(reply); }
+    return s;
+}
+
+int dstudio_steer_drain(dstudio_steer *s, int finishing,
+                       dstudio_steer_append append, void *owner) {
+    int added = 0;
+    if (!s->enabled) return 0;
+    for (;;) {
+        char *reply = steer_exchange(s->turn, s->ack, finishing && !added);
+        if (!reply) {
+            s->enabled = 0;
+            fprintf(stderr, "DStudio: steering delivery unavailable; unconfirmed context is not replayed.\n");
+            return added;
+        }
+        char *text = strchr(reply, '\n');
+        unsigned seq = (unsigned)strtoul(reply, NULL, 10);
+        if (!seq) { free(reply); return added; }
+        if (!text || !text[1] || seq <= s->ack) { free(reply); s->enabled = 0; return added; }
+        append(owner, text + 1);
+        s->ack = seq; /* ACK only after the owner appended the actual user input. */
+        added++;
+        free(reply);
+    }
+}
 
 static void remote_err(char *err, size_t err_len, const char *fmt, ...) {
     if (!err || !err_len) return;

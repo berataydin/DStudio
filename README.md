@@ -4,7 +4,7 @@
 
 # DStudio: Local AI Studio
 
-**An open-source, local-first workspace for DeepSeek V4, GLM 5.3 Flash and Laguna S 2.1, with experimental Qwen3.6/3.8 Chat: private conversations, coding and knowledge-work agents, document research, visual design, images and MiniMax H3 video. A cloud account is optional.**
+**An open-source, local-first workspace for DeepSeek V4, GLM 5.3 Flash and Laguna S 2.1, with experimental Qwen support: private conversations, coding and knowledge-work agents, document research, visual design, images and MiniMax H3 video. A cloud account is optional.**
 
 ![license](https://img.shields.io/badge/license-BSD%203%20Clause-blue)
 ![platform](https://img.shields.io/badge/platform-macOS_%7C_Linux_%7C_Windows-black)
@@ -20,6 +20,7 @@
 - [Latest changes](docs/changes/2026-09-06.md)
 - [Install](#install-on-macos)
 - [Supported models and limitations](#supported-models-and-limitations)
+  - [Qwen update: what changes for you](#qwen-update-what-changes-for-you)
 - [What DStudio can do](#what-you-can-do)
 - [Modes](#modes)
 - [Check PDF sources](#check-pdf-sources)
@@ -103,12 +104,28 @@ promise that an older downloaded release includes every integration.
 | DeepSeek V4 Pro | Integrated in all four modes | About 430 GB of weights; not validated on the reference 96 GB Mac. |
 | GLM 5.3 Flash | All four modes; images with its encoder | Uses the main engine, not a separate GLM checkout. Full-model QA for the M2 optimization remains open. |
 | Laguna S 2.1 | All four modes, text only | Experimental, macOS Metal; requires resident weights and cannot force expert SSD streaming On. |
-| Qwen3.8-Flash-Next | **Chat only** | Experimental. Agent, Cowork, Design and vision are not integrated. Main weights stay in RAM; its required PLE file stays on SSD. |
-| Qwen3.6-35B-A3B | **Chat only** | Experimental, macOS Metal. The supported Q6_K_XL file is 31.8 GB, all in RAM; no PLE is needed. Build/integration tested, real inference not yet validated in DStudio. |
+| Qwen3.8-Flash-Next | Chat, Agent and Cowork | Experimental, macOS Metal. Requires the new pinned engine; Design and vision are not integrated. Main weights stay in RAM; its required PLE file stays on SSD. |
+| Qwen3.6-35B-A3B | Chat, experimental Agent and Cowork | macOS Metal, 31.8 GB Q6_K_XL in RAM; no PLE. Real file/tool workflows pass. New-session preparation runs on a worker and retains the old context on cancellation/failure. Full quality and desktop validation remain open. |
 
 Qwen automatically uses expert SSD streaming **Off**, even if **On** was saved
 for DeepSeek. This does not disable Qwen3.8's SSD-backed PLE or erase the preference
 used when switching back to DeepSeek.
+
+### Qwen update: what changes for you
+
+Both **Qwen3.6-35B-A3B and Qwen3.8-Flash-Next can now use Agent and Cowork**
+on Apple Silicon: read your files, make changes and check the saved result.
+Starting a new session no longer blocks the command reader. If that reset
+fails or you cancel it, the previous model context is retained; DStudio waits
+for confirmation before connecting the new conversation.
+
+The final real-model reset checks passed in **Agent and Cowork on both models**.
+Another **13 deterministic regression cases** cover errors, cancellation and
+duplicate requests. These are focused development checks, not a general quality
+score or a speed benchmark; initial failed attempts remain documented.
+**Design, vision and full desktop/quality validation remain open.** Qwen3.6
+still cannot restore complete disk checkpoints, although chat history is saved.
+See the [test evidence and remaining checkpoints](docs/QWEN_CHECKPOINT.md).
 
 Separate media workers provide **Ideogram 4** image generation,
 **HunyuanImage 3** image editing and **MiniMax H3** video; they are not chat models.
@@ -135,7 +152,7 @@ weights stay in the shared `ds4/gguf/` store.
 
 ## What You Can Do
 
-- Run **DeepSeek V4, GLM 5.3 Flash or Laguna S 2.1 locally**, or use **Qwen3.6-35B-A3B / Qwen3.8-Flash-Next in Chat**, through the same native desktop interface and unified GGUF picker.
+- Run **DeepSeek V4, GLM 5.3 Flash or Laguna S 2.1 locally**, or **Qwen3.8-Flash-Next and Qwen3.6-35B-A3B in Chat, Agent and Cowork** (experimental Metal, with the limits below), through the same native desktop interface and unified GGUF picker.
 - Use a **private AI chat** with persistent KV cache, reasoning display, citations from optional Web Search and local history.
 - Use **Learn** to build an interactive learning path from a goal, PDFs and source links, with prerequisite ordering, exercises, checkpoints and locally saved progress.
 - Open a dedicated **Tutor** for any roadmap block, with that block's prerequisites, sources, exercises and conversation restored automatically.
@@ -757,7 +774,7 @@ python3 extension/search/bench/plot-results.py
 
 - **Local-first & private.** Core inference runs on your machine by default, with no telemetry and a strict CSP. Model downloads, Web Research and the optional DeepSeek API backend are the documented outbound paths and activate only when the user requests or configures them.
 - **Self-contained native app.** The UI is one vanilla file base64-embedded in the binary. No Electron, no asset server, no CDN.
-- **Non-invasive integration.** The agent's structured output comes from a small, **reversible, build-time patch** of the engine source: DStudio backs it up, builds a separately-named binary and restores the original immediately. The current DStudio release requires this structured runtime and fails clearly if its pinned patch cannot be built.
+- **Versioned runtime adaptations.** Native adaptations are explicit `.patch` files. On the tested macOS path, Agent/Cowork derive private frontend sources and Design builds in a private source/object snapshot. A failed compile does not replace the working executable. Unsupported or incomplete patches are reported clearly.
 - **Setup doctor.** First run checks the ds4 folder, GGUF model, chat engine, Agent/Cowork/Design runtimes, Cowork's Python helper, Web Search, port and LAN state, then gives a direct fix button.
 - **Clear controls and startup state.** The composer **+** menu groups labelled attachment, workspace, Skill and workflow actions by mode. App boot and engine changes show real launcher phases, segmented progress, runtime/context/power instruments and deduplicated structured logs. Agent, Cowork and Design expose actual system-prefill token counters; an unknown prefill duration is labeled as such instead of presenting a false linear ETA.
 - **Local tools with a remote model.** The optional DeepSeek API and LAN-host backends replace inference only; Agent, Cowork, Design, GSA and RSA tools remain on the client machine with the selected workspace.
@@ -800,6 +817,9 @@ Main is pinned to `f4d03f6` (September 5, 2026):
 > The local models are intentionally large. If the selected GGUF does not fit your hardware, the screenshots show the native workflows and the optional DeepSeek API backend can provide inference while workspace tools stay local.
 
 `ds4-design` lives in **this** repo (`extension/design/ds4_design.c`) and is compiled into the ds4 repo automatically the first time you open Design.
+Its build is isolated from the engine's existing source and object files. If a
+build fails or is interrupted, DStudio reports the failure; a compiler left
+running after its owner exits cannot install a new runtime by itself.
 
 ### MiniMax H3 video (optional)
 
@@ -916,7 +936,7 @@ make run PORT=8080 DS4_DIR=/path/to/ds4
 
 Dev loop: `DS4UI_PAGE_FROM_DISK=1 ./dstudio` serves `web/index.html` from disk (hot editing) instead of the embedded copy. `DS4UI_NO_WINDOW=1` runs headless (server only).
 
-### Qwen3.8-Flash-Next (experimental Chat/native)
+### Qwen3.8-Flash-Next (experimental Chat, Agent and Cowork)
 
 DStudio includes the pinned [Qwen branch of ds4-metal](https://github.com/ivanfioravanti/ds4-metal/tree/qwen3.8-flash-next)
 in `ds4-qwen38`, separate from main and Laguna. Select **Qwen3.8-Flash-Next** in
@@ -934,16 +954,31 @@ read from SSD by the model architecture; the backbone uses resident Metal.
 The optional second full MTP checkpoint is not downloaded. Model files remain
 in `ds4/gguf`, shared with the other engines.
 
-Qwen currently works through **Chat/native inference only**. Its structured
-Agent, Cowork and Design integration is not implemented; those modes report
-this explicitly. Do not interpret the repository download or successful build
-as proof of model quality or support for every DStudio mode.
+Qwen3.8 supports **Chat, Agent and Cowork** using its native tool format, with
+engine pin `66b0e3f`. Real headless DStudio tests on M2 Max cover reading data,
+creating the correct file/document, reading it back and continuing after a
+rejected mode switch. Agent also runs through its automatic Task Graph.
+These are two development workflows, not full quality or desktop qualification.
+Design and vision remain unavailable for this integration.
+
+New-session preparation now runs on the native worker so progress and Stop can
+remain responsive. A failed or canceled reset keeps the previous conversation;
+the UI switches conversations only after the native success receipt. See the
+[Qwen checkpoint](docs/QWEN_CHECKPOINT.md) for verification and remaining work.
+The final reset-specific real-model replay passes in both Agent and Cowork.
+Progress follows native completed chunks; it is not a per-token animation or
+a promise to interrupt a GPU kernel midway.
+
+New CLI installations build both structured runtimes; the app prepares them
+asynchronously before the first Agent/Cowork launch. An older checkout is not
+silently overwritten: an incompatible build fails without replacing its sources,
+weights or the currently running engine. See [the real host test](tests/README.md#qwen-real-host-workflows).
 
 If a previous version failed with “expert streaming is not validated”, rebuild
 and reopen DStudio. The loading screen and model picker now apply Qwen's
 compatible streaming configuration without changing the saved DeepSeek choice.
 
-### Qwen3.6-35B-A3B (experimental Chat/native)
+### Qwen3.6-35B-A3B (experimental Chat, Agent and Cowork)
 
 The separate [vagrillo Qwen branch](https://github.com/vagrillo/ds4/tree/qwen35moe-support)
 is pinned at `60fca11f0c8b16ca50c757324dddd717ba043098` in `ds4-qwen35`.
@@ -954,16 +989,35 @@ This downloads the exact **Unsloth Q6_K_XL** file (31.8 GB), checks its size and
 SHA-256, and shares `ds4/gguf` with the existing engines. Interrupted transfers
 can resume. It does not download Qwen3.8, a PLE, or a vision encoder.
 
-Chat is text-only and uses native full power; the other models' power preference
-is kept. Expert SSD streaming, DSpark, prompt lookup and the structured
-Agent/Cowork/Design adapter are not enabled. The native expert count is unchanged;
+Chat, Agent and Cowork are text-only and use native full power; the other models'
+power preference is kept. Design, expert SSD streaming, DSpark and prompt lookup
+are not enabled. The native expert count is unchanged;
 experimental expert pruning is not enabled. Disk context checkpoints are disabled
 because this fork does not serialize Qwen's complete recurrent state. Chat history
 is still saved, and the running model can reuse its live context.
 
 Verified: fresh source download, native compilation, executable startup, model
 selection, launch parameters and resumable-download integrity with small test files.
-**No real Qwen3.6 answer-quality or tokens/s result is claimed yet.**
+The initial real-weight development checks passed **11 of 12** questions;
+one code-evaluation answer was wrong. This is not full quality qualification
+or a published throughput benchmark.
+
+The [native Agent/Cowork adapter](patch/ds4-agent-jsonl/README.md) now has two
+passing real headless host workflows: correct files, tool readback, automatic
+Task Graph, continued operation after a rejected Design switch, generation
+interruption and a new session followed by another read. Fresh CLI installation
+also builds both structured runtimes. The initial host control run failed and
+is retained separately; the successful retry does not erase it.
+
+A new session still rebuilds the system context and can take minutes. That work
+now runs on the native worker: progress can be delivered while it runs, and a
+failed or canceled reset preserves the previous conversation. The UI waits for
+the native result before connecting a new conversation. This is a control and
+recovery fix, not a claim of faster generation or full desktop/quality coverage.
+The final real-model reset replay passes in both Agent and Cowork; initial
+test failures and their corrections are retained separately.
+See [test scope and limits](tests/README.md#qwen-real-host-workflows) and the
+[Qwen stopping checkpoint](docs/QWEN_CHECKPOINT.md).
 
 ### Real installation and inference checks
 

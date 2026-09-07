@@ -5,8 +5,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 
 let chromium;
+const browserKind = process.env.DSTUDIO_TEST_BROWSER || 'chromium';
 try {
-  ({ chromium } = await import('playwright'));
+  chromium = (await import('playwright'))[browserKind];
 } catch (e) {
   console.log('ui_agent_design_playwright_test: playwright missing, NOT RUN');
   process.exit(1);
@@ -30,6 +31,7 @@ let agentPollDeliveredLen = 0;
 let agentPollCaughtUp = 0;
 let holdNextNewSession = false;
 let releaseHeldNewSession = null;
+let failNextNativeNewSession = false;
 let designStartupAt = 0;
 let designAnnotationFixture = false;
 
@@ -304,10 +306,15 @@ const server = http.createServer(async (req, res) => {
       releaseHeldNewSession = release;
       setTimeout(release, 15000);
     } else if (body.action === 'new') {
+      const failed = failNextNativeNewSession;
+      failNextNativeNewSession = false;
       agentPollSessionWorking = true;
       agentPollWorking = true;
       setTimeout(() => {
-        agentPollText += currentMode === 'design'
+        agentPollText += failed
+          ? '\x1e' + JSON.stringify({ type: 'session_status', level: 'error',
+            message: 'new session failed: interrupted; previous session retained' }) + '\n'
+          : currentMode === 'design'
           ? '\x1e' + JSON.stringify({ type: 'session_status', level: 'info', message: 'started a new session' }) + '\n'
           : 'new session started\n';
         agentPollWorking = false;
@@ -437,6 +444,7 @@ try {
   browser = await chromium.launch();
 } catch (e) {
   try {
+    if (browserKind !== 'chromium') throw e;
     browser = await chromium.launch({ channel: 'chrome' });
   } catch (chromeError) {
     server.close();
@@ -461,7 +469,8 @@ try {
   page.on('console', (msg) => {
     if (msg.type() === 'error') pageErrors.push(msg.text());
   });
-  await page.addInitScript(() => {
+  await page.addInitScript(({ origin }) => {
+    if (window.top !== window || location.origin !== origin) return;
     const now = Date.now();
     window.ds4PickDirectory = async ({ mode }) => (
       mode === 'design' ? '/tmp/dstudio-ui-design'
@@ -491,7 +500,7 @@ try {
       ],
     }));
     localStorage.setItem('ds4web.active.v2', JSON.stringify({ v: 2, ids: { chat: null, agent: 'agent-seed', cowork: 'cowork-seed', design: 'design-seed' } }));
-  });
+  }, { origin: `http://127.0.0.1:${port}` });
 
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
   await page.locator('#composer-input').fill('Test exact chat speed');
@@ -627,7 +636,15 @@ try {
   // Getting your own prompt back out must not depend on dragging a selection
   // across a transcript that is still streaming: every user turn carries a
   // copy button that yields the exact text the model was sent.
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  // WebKit does not expose Playwright's clipboard permission override. Exercise
+  // the same copy interaction with an explicitly simulated clipboard there.
+  if (browserKind === 'chromium') await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  else await page.evaluate(() => {
+    let copied = '';
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async text => { copied = text; }, readText: async () => copied,
+    } });
+  });
   const lastUserTurn = page.locator('.agent-user-turn').last();
   const copyButton = lastUserTurn.locator('.agent-user-copy');
   assert.equal(await copyButton.count(), 1, 'each Agent user turn should expose a copy button');
@@ -687,6 +704,18 @@ try {
     'fresh Agent UI must not inherit model output or engine-maintenance chatter');
   assert.equal(await page.locator('#btn-stop').isHidden(), true,
     'fresh Agent conversation must be idle after its internal /new settles');
+  // A real browser must consume the same native reset receipt in Agent,
+  // not only in Design. Merely exercising the event parser misses that route.
+  failNextNativeNewSession = true;
+  const beforeFailedAgentNew = sessions.length;
+  await page.locator('#btn-new-chat').click();
+  await waitFor(() => sessions.length > beforeFailedAgentNew, 'Agent reset request');
+  await page.getByText('new session failed: interrupted; previous session retained', { exact: true })
+    .first().waitFor({ timeout: 5000 });
+  assert.equal(sessions.slice(beforeFailedAgentNew).filter(s => s.action === 'list').length, 0,
+    'Native reset receipts must not trigger a Design-only session refresh');
+  await page.locator('#btn-new-chat').click();
+  await page.getByRole('heading', { name: /What should we build\?/ }).waitFor({ timeout: 5000 });
   const freshAgentPrompt = 'Fresh Agent prompt after the previous run was closed';
   await page.locator('#composer-input').fill(freshAgentPrompt);
   await page.locator('#btn-send').click();
@@ -802,6 +831,14 @@ try {
     'Cowork command hints should invoke the existing session commands',
     debugDetails,
   );
+
+  failNextNativeNewSession = true;
+  const beforeFailedCoworkNew = sessions.length;
+  await page.locator('#btn-new-chat').click();
+  await waitFor(() => sessions.length > beforeFailedCoworkNew, 'Cowork reset request');
+  await page.getByText('new session failed: interrupted; previous session retained', { exact: true })
+    .first().waitFor({ timeout: 5000 });
+  assert.equal(sessions.slice(beforeFailedCoworkNew).filter(s => s.action === 'list').length, 0);
 
   await page.locator('#tab-design').click();
   const retirementNotice = page.getByText('The previous style was retired. Choose a DStudio original in the Design gallery.')

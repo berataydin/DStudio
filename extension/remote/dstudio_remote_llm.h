@@ -3,6 +3,18 @@
 
 #include <stddef.h>
 
+/* Same-turn steering. Only the inference owner calls these, between completed
+ * assistant/tool rounds. No transcript mutation occurs on the HTTP thread. */
+typedef struct {
+    unsigned long long turn;
+    unsigned ack;
+    int enabled;
+} dstudio_steer;
+typedef void (*dstudio_steer_append)(void *owner, const char *text);
+dstudio_steer dstudio_steer_begin(void);
+int dstudio_steer_drain(dstudio_steer *s, int finishing,
+                       dstudio_steer_append append, void *owner);
+
 typedef struct {
     char *ptr;
     size_t len;

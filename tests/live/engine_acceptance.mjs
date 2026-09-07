@@ -11,6 +11,7 @@ const root = process.cwd();
 const install = process.argv.includes('--setup');
 const infer = process.argv.includes('--infer');
 const viaApp = process.argv.includes('--via-app');
+const stateReplay = process.argv.includes('--state-replay');
 if (!install && !infer) throw Error('Specify --setup and/or --infer; real network/model execution is explicit.');
 const option = (name, fallback) => { const i=process.argv.indexOf(name); return i<0?fallback:process.argv[i+1]; };
 const engines = option('--engines', install ? 'main,laguna,qwen,qwen35' : 'main,laguna').split(',');
@@ -34,6 +35,7 @@ const report = {schema:'dstudio.engine-acceptance.v1',started:new Date().toISOSt
   installationRoot:installedRoot, scope:'Network setup and observable answer correctness, NOT full-logit numerical equivalence or a general capability benchmark.',results:[]};
 const save = () => fs.writeFileSync(path.join(run,'results.json'),JSON.stringify(report,null,2)+'\n');
 const hashFile = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+report.harnessSha256 = hashFile(new URL(import.meta.url));
 const owned = new Set();
 function launch(exe,args,log,cwd,env={}) {
   const fd=fs.openSync(log,'wx');
@@ -101,12 +103,21 @@ async function inference(id, entry) {
       assert.equal(fs.realpathSync(matches[0].engineDir),fs.realpathSync(cwd));
       entry.inference.launcher.catalogMatch=matches[0];
       entry.inference.launcher.preflight=[];
-      for(const mode of ['agent','cowork','design']){
-        const res=await fetch(base+'/api/start',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'ds4web'},body:JSON.stringify({mode,gguf:`gguf/${cfg.file}`,workdir:run}),signal:AbortSignal.timeout(15000)});
+      // Both Qwen tool workflows have a separate real host runner. Keep this
+      // Chat gate's preflight coverage without accidentally launching another
+      // supported heavyweight mode. Forced expert streaming remains invalid.
+      for(const [mode,ssdStreaming,code] of [
+        ['design','off','unsupported_model_mode'],
+        ['agent','on','unsupported_memory_mode'],
+        ['cowork','on','unsupported_memory_mode'],
+      ]){
+        const request={mode,ssdStreaming,gguf:`gguf/${cfg.file}`,workdir:run};
+        const res=await fetch(base+'/api/start',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'ds4web'},body:JSON.stringify(request),signal:AbortSignal.timeout(15000)});
         const body=await res.json();
         assert.equal(res.status,409,JSON.stringify(body)); assert.equal(body.ok,false);
-        assert.equal((await http(base+'/api/status')).running,false,'unsupported modes must not start a heavyweight process');
-        entry.inference.launcher.preflight.push({mode,httpStatus:res.status,response:body,status:'pass'});
+        assert.equal(body.code,code);
+        assert.equal((await http(base+'/api/status')).running,false,'unsupported configurations must not start a heavyweight process');
+        entry.inference.launcher.preflight.push({mode,request,httpStatus:res.status,response:body,status:'pass'});
       }
       const launchRequest={mode:'server',gguf:`gguf/${cfg.file}`,port:await freePort(),ctx:8192,power:100,ssdStreaming:'off',dspark:false,think:'off'};
       entry.inference.launcher.request=launchRequest;
@@ -126,6 +137,13 @@ async function inference(id, entry) {
     assert.ok(models?.data?.length,'engine did not become ready');
     entry.inference.loadSeconds=(performance.now()-begin)/1000;
     entry.inference.models=models;
+    if (id === 'qwen35') {
+      const expected = 'qwen3.6-35b-a3b';
+      const ids = models.data.map(row => row.id);
+      entry.inference.catalogIdentity = { expected, received: ids,
+        status: ids.length === 1 && ids[0] === expected ? 'pass' : 'fail' };
+      save();
+    }
     if(viaApp){
       const status=await http(base+'/api/status');
       assert.equal(status.modelFile,`gguf/${cfg.file}`);
@@ -142,6 +160,10 @@ async function inference(id, entry) {
       entry.inference.cases.push(row);save();console.log(`${id}: ${name}: ${row.status}`);return row;
     };
     const user=text=>[{role:'user',content:text}];
+    const codePrompt='In Python: x = [3, 5, 8]; print(sum(v * 2 for v in x if v % 2 == 1)). What integer is printed? Reply only with that integer.';
+    // Development diagnosis only: identical deterministic request before and
+    // after other contexts, without replacing the original failed baseline.
+    const coldCode = stateReplay ? await ask('cold code-state reference',user(codePrompt),s=>assert.equal(s.trim(),'16')) : null;
     await ask('integer arithmetic',user('What is 17 multiplied by 19? Reply with only the integer.'),s=>assert.equal(s.trim(),'323'));
     await ask('negative arithmetic',user('Compute 14 - 29. Reply with only the integer.'),s=>assert.equal(s.trim(),'-15'));
     await ask('structured extraction',user('Return ONLY a JSON object with keys city and count. Record: city=Torino; count=7. count must be a number.'),s=>assert.deepEqual(JSON.parse(s),{city:'Torino',count:7}));
@@ -151,7 +173,15 @@ async function inference(id, entry) {
     await ask('multi-turn recall',[{role:'user',content:`Remember the project code ${nonce}.`},{role:'assistant',content:'Understood.'},{role:'user',content:'What is the project code? Return only the code.'}],s=>assert.equal(s.trim(),nonce));
     const rows=Array.from({length:90},(_,i)=>`Item ${i}: location aisle-${i+3}; units ${i*3+2}.`).join('\n');
     await ask('longer-context retrieval',user(rows+'\nWhat are the units for Item 67? Reply with only the integer.'),s=>assert.equal(s.trim(),'203'));
-    await ask('code execution reasoning',user('In Python: x = [3, 5, 8]; print(sum(v * 2 for v in x if v % 2 == 1)). What integer is printed? Reply only with that integer.'),s=>assert.equal(s.trim(),'16'));
+    const afterCode = await ask('code execution reasoning',user(codePrompt),s=>assert.equal(s.trim(),'16'));
+    if (stateReplay) {
+      const cold = coldCode.response?.choices?.[0]?.message?.content;
+      const after = afterCode.response?.choices?.[0]?.message?.content;
+      entry.inference.stateReplay = { scope: 'Development replay, not held-out quality or numerical equivalence',
+        cold, after, expected: '16',
+        status: cold !== undefined && cold === after ? 'pass' : 'fail' };
+      save();
+    }
     // A malformed real request must fail, and must not poison the next turn.
     const invalid=await fetch(base+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'ds4web'},body:'{invalid',signal:AbortSignal.timeout(10000)});
     entry.inference.cases.push({name:'invalid request rejected',status:invalid.status>=400&&invalid.status<500?'pass':'fail',httpStatus:invalid.status,response:await invalid.text()});
@@ -189,6 +219,8 @@ async function inference(id, entry) {
       assert.ok(parsed.some(e=>e.choices?.[0]?.finish_reason==='stop'));streamRow.status='pass';
     }catch(e){streamRow.status='fail';streamRow.error=e.message;}
     entry.inference.cases.push(streamRow);save();
+    assert.notEqual(entry.inference.catalogIdentity?.status,'fail','native catalog misidentifies the loaded Qwen model');
+    assert.notEqual(entry.inference.stateReplay?.status,'fail','the same deterministic prompt changed after unrelated requests');
     assert.ok(entry.inference.cases.every(c=>c.status==='pass'),'one or more answer/protocol checks failed');
   } finally {
     await stop(child);
@@ -208,9 +240,18 @@ for(const id of engines){
       const before=performance.now();const child=launch(app,['--install-engine',id,installedRoot],path.join(run,id+'-install.log'),root);
       await bounded(child,1200000);
       entry.installation={seconds:(performance.now()-before)/1000,receipt:JSON.parse(fs.readFileSync(path.join(target,'.dstudio-source.json'),'utf8'))};
-      for(const exe of id==='qwen' || id==='qwen35'?['ds4','ds4-server','ds4-agent']:['ds4-server','ds4-agent-jsonl','ds4-cowork','ds4-design']){
+      const executables = ['qwen','qwen35'].includes(id)
+        ? ['ds4','ds4-server','ds4-agent','ds4-agent-jsonl','ds4-cowork']
+        : ['ds4-server','ds4-agent-jsonl','ds4-cowork','ds4-design'];
+      entry.installation.executables=[];
+      for(const exe of executables){
         const help=execFileSync(path.join(target,exe),['--help'],{cwd:target,timeout:15000,encoding:'utf8',maxBuffer:1024*1024});
         assert.ok(help.length>20,`${exe} must actually execute`);
+        const evidence=path.join(run,`${id}-${exe}-help.txt`);
+        fs.writeFileSync(evidence,help,{flag:'wx'});
+        entry.installation.executables.push({name:exe,sha256:hashFile(path.join(target,exe)),
+          helpFile:path.basename(evidence),helpSHA256:hashFile(evidence)});
+        save();
       }
       if(id!=='main')assert.equal(fs.realpathSync(path.join(target,'gguf')),fs.realpathSync(path.join(installedRoot,'ds4/gguf')));
       console.log(`${id}: network download, build and executable startup passed`);
