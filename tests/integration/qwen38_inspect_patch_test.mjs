@@ -38,6 +38,7 @@ try {
   const original = fs.readFileSync(file);
   report.sourceSha256 = sha(file);
   report.patchSha256 = sha('patch/ds4-qwen38-inspect/metadata-only-ple.patch');
+  report.currentPatchSha256 = sha('patch/ds4-qwen38-inspect/metadata-current.patch');
   const unrelated = '\n/* unrelated local comment: must survive patch lifecycle */\n';
   fs.appendFileSync(file, unrelated);
   const pristine = fs.readFileSync(file);
@@ -51,8 +52,9 @@ try {
   passed('apply, repeat, read-only check, restore and unrelated-edit preservation');
   // Corrupt the exact patch location in a private fixture. A failed preflight
   // must not repair arbitrary drift or partially change the input file.
-  const targetLine = '        model_open(&e->ple_model, opt->ple_path, false, true);';
-  const drift = pristine.toString().replace(targetLine, targetLine.replace('true', 'false /* drift */'));
+  const targetLine = pristine.toString().includes('        if (prefault_full) {')
+    ? '        if (prefault_full) {' : '        model_open(&e->ple_model, opt->ple_path, false, true);';
+  const drift = pristine.toString().replace(targetLine, '        /* incompatible fixture at the adapted prefetch decision */');
   assert.notEqual(drift, pristine.toString(), 'fixture must really differ');
   fs.writeFileSync(file, drift);
   assert.notEqual(patch('apply').status, 0); assert.equal(fs.readFileSync(file, 'utf8'), drift);
@@ -81,7 +83,10 @@ try {
       'tests/support/native_prefetch_probe.c', '-o', dylib]).status, 0);
     const binary = path.join(engine, 'ds4');
     const args = ['--cpu', '--inspect', '-m', model, '--ple', ple];
-    const observation = { DYLD_INSERT_LIBRARIES: dylib, DSTUDIO_TEST_PREFETCH_STOP: '' };
+    // The current upstream normally demand-pages PLE on small Macs. Explicitly
+    // exercise its full-prefault path too: --inspect must remain metadata-only
+    // regardless of the host size or this normal-inference preference.
+    const observation = { DYLD_INSERT_LIBRARIES: dylib, DSTUDIO_TEST_PREFETCH_STOP: '', DS4_QWEN4_PLE_PREFETCH_FULL: '1' };
     assert.equal(invoke('make', ['-j2', 'ds4'], {}, engine, 180000).status, 0);
     report.beforeBinarySha256 = sha(binary);
     const before = invoke(binary, args, observation, engine);
@@ -97,7 +102,7 @@ try {
     assert.equal(after.status, 0, after.stderr);
     assert.ok(!after.stderr.includes('DSTUDIO_TEST_PREFETCH'));
     assert.equal(after.stdout, before.stdout, 'every emitted metadata value must be unchanged');
-    const native = invoke(binary, args, { DYLD_INSERT_LIBRARIES: '', DSTUDIO_TEST_PREFETCH_STOP: '' }, engine);
+    const native = invoke(binary, args, { DYLD_INSERT_LIBRARIES: '', DSTUDIO_TEST_PREFETCH_STOP: '', DS4_QWEN4_PLE_PREFETCH_FULL: '1' }, engine);
     assert.equal(native.status, 0, native.stderr);
     assert.equal(native.stdout, before.stdout, 'ordinary CLI, without the observer, returns the same metadata');
     const summary = /^gguf:\s+v(\d+), (\d+) metadata keys, (\d+) tensors$/m.exec(native.stdout);

@@ -1,8 +1,30 @@
 # DStudio upstream patches
 
-This directory contains the patches that DStudio applies to the upstream DS4 checkout when building its managed runtimes.
+This directory contains DStudio's explicit adaptations for managed runtimes
+and separately identified engine candidates.
 
-Agent/Cowork patch **91** and `ds4-server-pld/` share
+The [q27 Metal candidate](q27-metal-delta/README.md) fixes the native DeltaNet
+512-thread dispatch failure reproduced on M2 Max. Two independent column tiles
+retain recurrence math and precision; native operators, a scalar oracle and
+patch lifecycle are verified separately from still-unqualified model inference.
+q27 is not yet a managed DStudio installation.
+
+The [q36 candidate](q36-metal-runtime/README.md) has an explicit native CLI
+installer and pinned model downloader. Its patch fixes Metal shape handling,
+mixed-format CPU FFN preparation, model identity and the native vision operators.
+Initial Qwen27B Chat/Agent/Cowork workflows are verified; broad quality,
+long-context execution and full application-mode qualification remain open.
+The separate [q36 terminal candidate](q36-agent-tty/README.md) addresses the
+latest upstream CLI's macOS terminal lifetime and, in a layered owner patch,
+responsive status/Stop during slow output with tested process lifetime. These
+are native lifecycle fixes, not inference improvements; the candidate
+has not yet been promoted into the managed installer.
+The [bounded F16 attention candidate](q36-f16-attention/README.md) addresses
+the identified long-context Metal command. It preserves the requested context
+and precision, with separate operator/lifecycle and actual-model verification.
+It is not yet a qualified installer update or a new common-100 result.
+
+Agent/Cowork patch **92** and `ds4-server-pld/` share
 [prompt lookup](ds4-agent-jsonl/PLD.md), with ordinary
 generation as the default reference path and an explicitly experimental Metal
 batch verifier. The normal ds4 engine/server objects remain untouched.
@@ -32,7 +54,10 @@ documented correction. The fourth full variant targets the isolated Qwen3.8
 its literal-markup parser correction has native regression coverage. Version 90
 adds Qwen3.6's native-tool adaptation and version 91 makes piped Qwen resets
 cancelable while retaining the old context on failure. Both models now expose
-experimental Agent/Cowork on Metal. See [the variant notes and prerequisites](ds4-agent-jsonl/README.md)
+experimental Agent/Cowork on Metal. Version 92 adds the explicit
+[empty-candidate core API](ds4-qwen38-prepare/README.md) for responsive Qwen3.8
+reset cancellation between GPU layers, without changing live-sync semantics.
+See [the variant notes and prerequisites](ds4-agent-jsonl/README.md)
 and [the Qwen checkpoint](../docs/QWEN_CHECKPOINT.md) for focused real-model
 results, retained failures and the still-open desktop/quality qualification.
 
@@ -69,7 +94,16 @@ applies it before the native build. Normal inference and PLE requirements stay
 unchanged; lifecycle and native OS-prefetch behavior have separate tests.
 The complete delta supports checked repeat apply and restore, rejecting drift.
 
-`ds4-glm53-runtime/streaming-memory.patch` is applied to the pinned upstream `main`, where GLM 5.3 now lives. It fixes the active mapped-span calculation used by SSD streaming and removes the fixed host-memory rejection; DStudio presents the model-size guidance as a non-blocking selection modal instead. The hook skips older/non-GLM checkouts.
+[`ds4-qwen38-snapshot`](ds4-qwen38-snapshot/README.md) follows inspection and
+empty-candidate preparation. It prevents a failed lazy snapshot allocation from
+being mistaken for a complete speculative state on retry; the native inference
+math and existing fallback are retained. Actual native-helper failpoint tests
+and patch lifecycle checks are distinct from real-weight quality evaluation.
+
+[`ds4-glm53-runtime`](ds4-glm53-runtime/README.md) selects the V4.1 or older
+complete delta for main, where GLM 5.3 lives. The new base's native non-routed
+weight helper replaces the duplicate local helper; GLM's mapped-span correction
+remains. V4.1 retains its own native memory planner and model ID.
 
 [`ds4-glm53-m2max/native-decode.patch`](ds4-glm53-m2max/README.md) follows
 that GLM patch on macOS. It carries the local top-8 cache-backed decode and
@@ -79,11 +113,10 @@ reverses it before the older patches during updates. It never enables SSD or
 MTP, changes context, or selects a model. See the linked QA report for the
 unclosed live-model gates; this is not a new DeepSeek speed claim.
 
-`ds4-visible-downloads/visible-partials.patch` replaces the main checkout's
-opaque Hugging Face local-dir cache path with resumable `curl` transfers. Every
-incomplete model is written as a stable `<filename>.part` directly beside the
-final GGUF. DStudio applies the patch idempotently when it installs, starts with
-or selects a compatible engine checkout; older optional branches are skipped.
+[`ds4-visible-downloads`](ds4-visible-downloads/README.md) uses visible resumable
+`.part` files for legacy main models. V4.1 instead retains its native pinned
+Hugging Face/Xet download, full verification and split assembly. Its progress
+counts matching cache artifacts only; intermediate bytes are not readiness.
 
 `ds4-media-memory/residency-lease.patch` adds a reversible residency lease used
 only by the direct Ideogram, Hunyuan and MiniMax H3 workers. It does not install

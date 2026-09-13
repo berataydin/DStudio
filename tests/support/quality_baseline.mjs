@@ -54,7 +54,7 @@ export function ownGitRevision(dir) {
   } catch { return null; }
 }
 
-const managedEngines = ['ds4', 'ds4-laguna-s21', 'ds4-qwen38', 'ds4-qwen35'];
+const managedEngines = ['ds4', 'ds4-laguna-s21', 'ds4-qwen38', 'ds4-qwen35', 'q36'];
 
 // Mirror the launcher's persisted checkout and fixed sibling search. Never
 // enumerate a home directory, File Provider tree, or unrelated application data.
@@ -137,12 +137,14 @@ function sourceFiles(dir, prefix = '') {
     if (entry.name.startsWith('.') || ['gguf', 'node_modules', 'build', 'target', '__pycache__'].includes(entry.name)) continue;
     const rel = path.join(prefix, entry.name);
     if (entry.isDirectory()) out.push(...sourceFiles(dir, rel));
-    else if (entry.isFile() && /(?:\.(?:c|cc|h|hpp|m|metal|cu|cuh|comp|glsl|spv|inc|mk|sh|py|frag)|(?:^|\/)Makefile)$/.test(rel)) out.push(rel);
+    else if (entry.isFile() && /(?:\.(?:c|cc|cpp|h|hpp|m|mm|metal|cu|cuh|comp|glsl|spv|inc|mk|cmake|sh|py|frag|cfrag)|(?:^|\/)(?:Makefile|CMakeLists\.txt))$/.test(rel)) out.push(rel);
   }
   return out.sort();
 }
 
-export async function captureBaseline(root, { fullWeights = false, extraStores = [], extraEngines = [] } = {}) {
+export async function captureBaseline(root, {
+  fullWeights = false, extraStores = [], extraEngines = [], discoveryOptions = {},
+} = {}) {
   root = fs.realpathSync(root);
   const parent = path.join(root, 'tests/.artifacts/quality-multihardware');
   fs.mkdirSync(parent, { recursive: true });
@@ -163,7 +165,7 @@ export async function captureBaseline(root, { fullWeights = false, extraStores =
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) continue;
     receipt.files.push({ path: rel, ...await hashStableFile(file) });
   }
-  const discovery = discoverInstallations(root, { extraEngines });
+  const discovery = discoverInstallations(root, { ...discoveryOptions, extraEngines });
   json('installation-paths.json', discovery);
   receipt.errors.push(...discovery.errors);
   const stores = [...extraStores];
@@ -180,7 +182,7 @@ export async function captureBaseline(root, { fullWeights = false, extraStores =
       } catch (error) { receipt.errors.push({ file: downloaded, error: error.message }); }
     }
     for (const rel of sourceFiles(real)) engine.sources.push({ path: rel, ...await hashStableFile(path.join(real, rel)) });
-    for (const name of ['ds4', 'ds4-server', 'ds4-agent', 'ds4-agent-jsonl', 'ds4-cowork', 'ds4-design']) {
+    for (const name of ['ds4', 'ds4-server', 'ds4-agent', 'ds4-agent-jsonl', 'ds4-cowork', 'ds4-design', 'q36', 'q36-server']) {
       const bin = path.join(real, name);
       if (fs.existsSync(bin)) engine.binaries.push({ path: bin, ...await hashStableFile(bin), executed: false });
     }

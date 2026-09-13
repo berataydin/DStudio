@@ -44,7 +44,9 @@ export function verifyQwen38ToolTrace(mode, events, output) {
   assert.deepEqual(results.map(e=>e.name), calls.map(e=>e.name), 'Every call needs its own ordered result');
   const reader = mode==='agent'?'read':'read_document';
   const writer = mode==='agent'?'write':'write_document';
-  const allowed = mode==='agent'?['read','write','edit']:['read_document','write_document','list','read'];
+  // Listing this exact workspace is local read-only inspection in both modes;
+  // the prompt prohibits shell/network, not that native file operation.
+  const allowed = mode==='agent'?['read','write','edit','list']:['read_document','write_document','list','read'];
   for (const call of calls) {
     assert(allowed.includes(call.name), 'Shell/network or another undeclared operation');
     const target = call.input?.path;

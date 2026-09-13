@@ -37,7 +37,7 @@ does not qualify numerical inference or change that existing timing boundary.
 ## Behavioral verification
 
 ```sh
-make test-server-metrics-patch test-main-decode-metrics
+make test-server-metrics-patch test-native-patch-roundtrip test-main-decode-metrics
 ```
 
 The first test copies current main and Laguna sources and reads the exact old

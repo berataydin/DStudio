@@ -1,9 +1,11 @@
 # DStudio unified patch variants; exact base revisions are in bases.json.
 name=ds4-agent-jsonl
-version=91
+version=102
+patch=main-v41.patch
 patch=main-current.patch
 patch=main-previous.patch
 patch=laguna.patch
 patch=qwen38.patch
+patch=qwen38-next.patch
 patch=qwen35.patch
 makefile=build.mk

@@ -37,6 +37,10 @@ typedef struct {
     char last_log[2048], failure[256], binary_identity[192];
     launch_dependency dependencies[LAUNCH_DEP_MAX];
     int dependency_count;
+    /* Allocated only for the separately owned dense-Qwen server. Legacy
+     * launches do not carry another model's process payload. */
+    q36_launch_spec *q36;
+    int validated, q36_started;
 #ifdef _WIN32
     HANDLE worker_job;
 #endif
@@ -72,7 +76,8 @@ static int launch_identity(const char *path, int directory, char *out, size_t ca
     return n > 0 && (size_t)n < cap;
 }
 
-static const char *launch_binary(int mode, int pld) {
+static const char *launch_binary(int mode, int pld, int q36) {
+    if (q36) return "q36-server";
 #ifdef _WIN32
     return mode == ENGINE_SERVER ? "ds4-server.exe" : mode == ENGINE_AGENT ? "ds4-agent-jsonl.exe"
         : mode == ENGINE_COWORK ? "ds4-cowork.exe" : "ds4-design.exe";
@@ -88,6 +93,12 @@ static int launch_add_dependency(launch_job *j, const char *root, const char *re
     int n = snprintf(d->path, sizeof d->path, "%s%s%s", root, rel && rel[0] ? "/" : "", rel ? rel : "");
     d->directory = directory;
     if (n < 0 || (size_t)n >= sizeof d->path || !launch_identity(d->path, directory, d->identity, sizeof d->identity)) return 0;
+    if (j->q36 && rel && !strcmp(root, j->request.engine_dir)) {
+        if (!strcmp(rel, j->request.model))
+            cstr_copy(j->q36->model_identity, sizeof j->q36->model_identity, d->identity);
+        if (!strcmp(rel, MODEL_QWEN27_VISION))
+            cstr_copy(j->q36->vision_identity, sizeof j->q36->vision_identity, d->identity);
+    }
     j->dependency_count++;
     return 1;
 }
@@ -128,7 +139,7 @@ static void launch_dispose(launch_job *j) {
 #ifdef _WIN32
     if (j->worker_job) CloseHandle(j->worker_job);
 #endif
-    free(j->result); free(j->prepared.skill_sys);
+    free(j->result); free(j->prepared.skill_sys); free(j->q36);
     /* Credentials never cross the preparation process boundary or its logs. */
     memset(&j->request.remote, 0, sizeof j->request.remote);
     free(j); g_launch = NULL;
@@ -138,6 +149,8 @@ static void launch_cancel(const char *reason) {
     launch_job *j = g_launch;
     if (!j || j->canceled) return;
     j->canceled = 1;
+    if (j->q36_started && g_q36.launch_task == j->task_id)
+        q36_request_stop(reason);
     cstr_copy(j->failure, sizeof j->failure, reason);
     task_mark_canceled(j->task_id, reason);
     launch_result_error(j, "launch_canceled", reason);
@@ -196,7 +209,9 @@ static int launch_prepare_cli(int argc, char **argv) {
     pthread_detach(guard);
 #endif
     char error[256] = "", identity[192] = "", binary[DSTUDIO_PATH_MAX + 64];
+    char agent_directory[1024] = "", agent_identity[192] = "";
     int ok = 1, pld = -1;
+    const int q36 = !g_remote_base_url[0] && model_file_is_qwen27(current_model_rel());
     /* Explicit force may release an external port only when the admitting
      * owner had no engine child. Never kill the still-running previous model. */
     if (!strcmp(argv[10], "release-external")) {
@@ -205,7 +220,41 @@ static int launch_prepare_cli(int argc, char **argv) {
             ((mode == ENGINE_SERVER && ds4_server_compatible((int)port)) || kill_external_server((int)port));
     }
     if (g_launch_worker_cancel) ok = 0;
-    if (ok && mode == ENGINE_SERVER) {
+    if (ok && q36) {
+            char root[1024], target[1024]; int downloaded = 0;
+            cstr_copy(root, sizeof root, g_ds4_dir);
+            char *slash = strrchr(root, '/');
+            if (!slash || slash == root || strcmp(slash + 1, Q36_DIR_NAME)) ok = 0;
+            else {
+                *slash = '\0';
+                ok = setup_install_engine("q36", root, target, sizeof target, &downloaded, error, sizeof error) &&
+                    !strcmp(target, g_ds4_dir);
+            }
+            if (ok && MODE_IS_PIPED(mode)) {
+                ok = q36_agent_directory(g_ds4_dir, agent_directory, sizeof agent_directory);
+                if (ok && !ds4_dir_valid_path(agent_directory))
+                    ok = setup_install_engine("main", root, target, sizeof target, &downloaded, error, sizeof error) &&
+                        !strcmp(target, agent_directory);
+                if (ok) {
+                    /* Only this private worker changes its build checkout.
+                     * The host selection remains q36, and this binary will
+                     * use RPC rather than opening a second model. */
+                    cstr_copy(g_ds4_dir, sizeof g_ds4_dir, agent_directory);
+                    cstr_copy(g_remote_base_url, sizeof g_remote_base_url, "prepare-only");
+                    ok = run_build_jsonl("build");
+                    snprintf(binary, sizeof binary, "%s/%s", agent_directory, launch_binary(mode, -1, 0));
+                    if (ok) ok = !access(binary, X_OK) && launch_identity(binary, 0, agent_identity, sizeof agent_identity);
+                    cstr_copy(g_ds4_dir, sizeof g_ds4_dir, argv[3]);
+                    /* Remote-only compilation does not change the selected
+                     * local model's capabilities. Restore this private worker
+                     * before it builds the charter from the captured files. */
+                    g_remote_base_url[0] = '\0';
+                }
+            }
+            if (ok) {
+                char kv[DSTUDIO_PATH_MAX]; kv_dir_for_model(current_model_rel(), kv, sizeof kv); mkpath(kv);
+            }
+    } else if (ok && mode == ENGINE_SERVER) {
 #ifndef _WIN32
         ok = setup_ensure_server_metrics_runtime(error, sizeof error);
         if (ok && !g_launch_worker_cancel) { pld = run_build_server_pld(); ok = pld != 0; }
@@ -226,14 +275,18 @@ static int launch_prepare_cli(int argc, char **argv) {
 #endif
     } else if (ok) ok = run_build_jsonl("build");
     if (g_launch_worker_cancel) ok = 0;
-    char *sys = ok && MODE_IS_PIPED(mode) ? build_piped_skill_sys(mode) : NULL;
+    /* The owned q36 tool runtime is built with remote-only compilation, but
+     * its admitted protocol remains structured. Do not derive prompt schemas
+     * from the worker's temporary "prepare-only" build setting. */
+    char *sys = ok && MODE_IS_PIPED(mode) ? build_piped_skill_sys(mode, q36) : NULL;
     if (sys && strlen(sys) > LAUNCH_SYS_MAX) { cstr_copy(error, sizeof error, "launch charter exceeds 64 KiB"); ok = 0; }
-    snprintf(binary, sizeof binary, "%s/%s", g_ds4_dir, launch_binary(mode, pld));
+    snprintf(binary, sizeof binary, "%s/%s", g_ds4_dir, launch_binary(mode, pld, q36));
     if (ok && (access(binary, X_OK) || !launch_identity(binary, 0, identity, sizeof identity))) ok = 0;
     if (!ok && !error[0]) cstr_copy(error, sizeof error, g_launch_worker_cancel ? "Preparation canceled" : "Runtime preparation failed; see the launcher build log");
     json_dyn_buf result = {0};
     json_dyn_printf(&result, "{\"v\":1,\"task\":\"%s\",\"ok\":%s,\"pld\":%d,\"identity\":", argv[9], ok ? "true" : "false", pld);
     json_dyn_put_escaped(&result, identity);
+    json_dyn_puts(&result, ",\"agentIdentity\":"); json_dyn_put_escaped(&result, agent_identity);
     json_dyn_puts(&result, ",\"error\":"); json_dyn_put_escaped(&result, error);
     json_dyn_puts(&result, ",\"sys\":"); json_dyn_put_escaped(&result, ok && sys ? sys : "");
     json_dyn_puts(&result, "}\n"); free(sys);
@@ -268,7 +321,8 @@ static int launch_worker_spawn(launch_job *j, char *error, size_t cap) {
     launch_request *r = &j->request;
     char *args[] = { g_launch_executable, "--prepare-launch", (char *)mode_name(r->mode), r->engine_dir,
         r->assets_dir, r->model, r->skill, r->design_system, r->remote.base_url[0] ? "remote" : "local", task,
-        r->force && g_child <= 0 && !r->remote.base_url[0] ? "release-external" : "keep-external", port, NULL };
+        r->force && g_child <= 0 && !q36_running() && !j->q36 && !r->remote.base_url[0]
+            ? "release-external" : "keep-external", port, NULL };
 #ifdef _WIN32
     /* Suspended creation prevents a child escaping the owned job before the
      * kill-on-close boundary is attached. No user runtime joins this job. */
@@ -324,24 +378,34 @@ fail:
 #endif
 }
 
+static int launch_request_current(const launch_job *j) {
+    const launch_request *r = &j->request;
+    dstudio_task *task = task_find(j->task_id);
+    return task && !task_status_terminal(task->status) &&
+        !strcmp(g_ds4_dir, r->engine_dir) && !strcmp(g_web_dir, r->assets_dir);
+}
+
 static int launch_revalidate(launch_job *j) {
     launch_request *r = &j->request;
-    dstudio_task *task = task_find(j->task_id);
-    if (!task || task_status_terminal(task->status)) return 0;
-    if (strcmp(g_ds4_dir, r->engine_dir) || strcmp(g_web_dir, r->assets_dir)) return 0;
+    if (!launch_request_current(j)) return 0;
     for (int i = 0; i < j->dependency_count; i++) {
         launch_dependency *d = &j->dependencies[i]; char current[192];
         if (!launch_identity(d->path, d->directory, current, sizeof current) || strcmp(d->identity, current)) return 0;
     }
     char binary[DSTUDIO_PATH_MAX + 64], current[192], error[256];
-    snprintf(binary, sizeof binary, "%s/%s", r->engine_dir, launch_binary(r->mode, j->prepared.server_pld));
+    snprintf(binary, sizeof binary, "%s/%s", r->engine_dir, launch_binary(r->mode, j->prepared.server_pld, j->q36 != NULL));
     if (access(binary, X_OK) || !launch_identity(binary, 0, current, sizeof current) || strcmp(current, j->binary_identity)) return 0;
+    if (j->q36 && MODE_IS_PIPED(r->mode)) {
+        snprintf(binary, sizeof binary, "%s/%s", j->q36->agent_dir, launch_binary(r->mode, -1, 0));
+        if (!j->q36->agent_identity[0] || access(binary, X_OK) ||
+            !launch_identity(binary, 0, current, sizeof current) || strcmp(current, j->q36->agent_identity)) return 0;
+    }
     return !launch_workdir_missing(r->mode, r->workdir) &&
         !native_launch_preflight(&r->cfg, r->mode, r->model, r->remote.base_url[0] != '\0', r->dspark, error, sizeof error);
 }
 
 static void launch_begin(int fd, const launch_request *request, unsigned long long resume_task) {
-    if (g_launch || g_child_stop_requested) {
+    if (g_launch || g_child_stop_requested || (q36_running() && g_q36.stopping)) {
         send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"launch_busy\",\"error\":\"An engine transition is already in progress. Wait or cancel it first.\"}"); return;
     }
     launch_job *j = calloc(1, sizeof *j);
@@ -349,7 +413,24 @@ static void launch_begin(int fd, const launch_request *request, unsigned long lo
     j->client = -1; j->guard = j->output = j->errors = -1; j->worker = -1;
     j->request = *request;
     j->result = malloc(LAUNCH_RESULT_MAX);
-    int ok = j->result && launch_add_dependency(j, request->engine_dir, "", 1) && launch_add_dependency(j, request->assets_dir, "", 1);
+    int q36 = !request->remote.base_url[0] && model_file_is_qwen27(request->model);
+    if (q36) {
+        j->q36 = calloc(1, sizeof *j->q36);
+        if (j->q36) {
+            j->q36->cfg = request->cfg;
+            cstr_copy(j->q36->directory, sizeof j->q36->directory, request->engine_dir);
+            cstr_copy(j->q36->model, sizeof j->q36->model, request->model);
+            cstr_copy(j->q36->vision, sizeof j->q36->vision, MODEL_QWEN27_VISION);
+            if (request->cfg.kv_space_mb > 0)
+                kv_dir_for_model(request->model, j->q36->kv_dir, sizeof j->q36->kv_dir);
+        }
+    }
+    int ok = j->result && (!q36 || j->q36) && launch_add_dependency(j, request->engine_dir, "", 1) && launch_add_dependency(j, request->assets_dir, "", 1);
+    if (ok && q36 && MODE_IS_PIPED(request->mode)) {
+        ok = q36_agent_directory(request->engine_dir, j->q36->agent_dir, sizeof j->q36->agent_dir) &&
+            launch_add_dependency(j, j->q36->agent_dir, "", 1);
+        j->prepared.runtime_dir = j->q36->agent_dir;
+    }
     if (ok && request->workdir[0]) ok = launch_add_dependency(j, request->workdir, "", 1);
     if (ok) ok = launch_add_dependency(j, g_launch_executable, "", 0);
     if (ok && !request->remote.base_url[0]) ok = launch_add_dependency(j, request->engine_dir, request->model, 0);
@@ -365,8 +446,14 @@ static void launch_begin(int fd, const launch_request *request, unsigned long lo
         snprintf(rel, sizeof rel, "%s/SKILL.md", request->skill);
         ok = launch_add_dependency(j, dir, rel, 0);
     }
-    const char *scripts[] = {"scripts/apply-ds4-glm53-m2max.sh", "scripts/apply-ds4-vision-streaming.sh", "scripts/apply-ds4-server-metrics.sh", "extension/design/build-design.sh", NULL};
+    const char *scripts[] = {"scripts/apply-ds4-glm53-m2max.sh", "scripts/apply-ds4-vision-streaming.sh", "scripts/apply-ds4-server-metrics.sh", "scripts/apply-ds4-qwen38-prepare.sh", "extension/design/build-design.sh", NULL};
     for (int i = 0; ok && scripts[i]; i++) ok = launch_add_dependency(j, request->assets_dir, scripts[i], 0);
+    if (q36) {
+        const char *inputs[] = {"scripts/install-q36.py", "scripts/apply-q36-metal-runtime.sh", "patch/q36-metal-runtime/next-review.patch",
+                               "scripts/apply-q36-agent-tty.sh", "patch/q36-agent-tty/monitor.patch", "patch/q36-agent-tty/monitor-owner.patch", NULL};
+        for (int i = 0; ok && inputs[i]; i++) ok = launch_add_dependency(j, request->assets_dir, inputs[i], 0);
+        if (ok) ok = launch_add_dependency(j, request->engine_dir, ".dstudio-source.json", 0);
+    }
     if (ok && request->mode == ENGINE_DESIGN && request->design_system[0]) {
         const char *files[] = {"DESIGN.md", "tokens.css", "components.html", "assets/preview.js", "references/recipes.md", NULL};
         for (int i = 0; ok && files[i]; i++) {
@@ -441,6 +528,8 @@ static void launch_preparation_tick(void) {
                         j->prepared.skill_sys = malloc(LAUNCH_SYS_MAX + 1);
                         if (!j->prepared.skill_sys || !json_get_string(j->result, "sys", j->prepared.skill_sys, LAUNCH_SYS_MAX + 1))
                             cstr_copy(j->failure, sizeof j->failure, "Invalid prepared charter");
+                        if (j->q36 && !json_get_string(j->result, "agentIdentity", j->q36->agent_identity, sizeof j->q36->agent_identity))
+                            cstr_copy(j->failure, sizeof j->failure, "Preparation did not identify the DStudio tool runtime");
                     }
                 }
                 j->received = 1; launch_worker_kill(j);
@@ -458,7 +547,12 @@ static void launch_preparation_tick(void) {
         if (j->guard >= 0) { close(j->guard); j->guard = -1; }
     }
     if (j->worker > 0) return;
+    if (j->q36_started && (!q36_running() || g_q36.stopping)) {
+        if (!j->failure[0]) cstr_copy(j->failure, sizeof j->failure,
+            g_q36.error[0] ? g_q36.error : "The owned Qwen server stopped before launch completed");
+    }
     if (j->canceled || j->failure[0] || !j->received) {
+        if (j->q36_started && g_q36.launch_task == j->task_id) q36_request_stop("Launch failed or canceled");
         if (!j->canceled) {
             task_mark_failed(j->task_id, j->failure, j->last_log);
             launch_result_error(j, "launch_prepare_failed", j->failure[0] ? j->failure : "Preparation failed");
@@ -472,17 +566,43 @@ static void launch_preparation_tick(void) {
         }
         launch_dispose(j); return;
     }
-    if (!launch_revalidate(j)) {
+    /* Do not rescan files on every loading/teardown tick. The request remains
+     * owner-validated throughout; dependency validation runs at the handoffs. */
+    if (!launch_request_current(j) || (!j->validated && !launch_revalidate(j))) {
         task_mark_failed(j->task_id, "Launch dependencies changed during preparation", "stale candidate rejected");
         launch_result_error(j, "launch_stale", "The model, workspace, runtime or style changed during preparation. Retry with the current selection.");
+        if (j->q36_started && g_q36.launch_task == j->task_id) q36_request_stop("Stale launch rejected");
         launch_dispose(j); return;
     }
+    j->validated = 1;
     if (g_child > 0) {
         if (!j->stopping) {
             j->stopping = 1;
             task_mark_working(j->task_id, "Runtime prepared; stopping the previous engine");
             request_child_stop();
         }
+        return;
+    }
+    if (j->q36) cstr_copy(j->q36->binary_identity, sizeof j->q36->binary_identity, j->binary_identity);
+    if (q36_running() && (!j->q36 || (!j->q36_started && !q36_same_launch(j->q36)))) {
+        q36_request_stop("Switching the selected model or configuration");
+        return;
+    }
+    if (j->q36 && !j->q36_started && !q36_running()) {
+        if (!launch_revalidate(j)) {
+            cstr_copy(j->failure, sizeof j->failure, "Launch dependencies changed while stopping the previous engine");
+            return;
+        }
+        if (!q36_start_owned(j->q36, j->task_id, j->failure, sizeof j->failure)) return;
+        j->q36_started = 1;
+        dstudio_task *task = task_find(j->task_id);
+        if (task) task->pid = (int)g_q36.pid;
+        task_mark_working(j->task_id, "Loading Qwen27B; waiting for the owned engine's readiness receipt");
+        return;
+    }
+    if (j->q36 && !q36_ready()) return;
+    if (!launch_revalidate(j)) {
+        cstr_copy(j->failure, sizeof j->failure, "Launch dependencies changed before publication");
         return;
     }
     launch_commit(j);

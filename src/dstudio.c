@@ -54,6 +54,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include "../extension/remote/dstudio_wire_string.h"
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -348,7 +349,7 @@ static char *ds4_strndup_local(const char *s, size_t n) {
 /* The primary managed checkout always follows the pinned upstream main. GLM
  * 5.3 and DeepSeek Vision-Exp (including native image input) live there, so
  * neither model needs a side checkout. */
-#define DS4_UPSTREAM_COMMIT "f4d03f6cf9f11c1e7b630bcb160853acfba7c52a"
+#define DS4_UPSTREAM_COMMIT "bd66c402070042bf0a79ad6ece8242de4c93680c"
 #define DS4_ARCHIVE_URL "https://codeload.github.com/antirez/ds4/tar.gz/" DS4_UPSTREAM_COMMIT
 
 /* Optional Laguna S 2.1 engine checkout. Laguna lives on its own upstream
@@ -357,17 +358,27 @@ static char *ds4_strndup_local(const char *s, size_t n) {
 #define DS4_LAGUNA_UPSTREAM_COMMIT "448d5695d1c86401a4e9447c440feb983b73e6de"
 #define DS4_LAGUNA_ARCHIVE_URL "https://codeload.github.com/antirez/ds4/tar.gz/" DS4_LAGUNA_UPSTREAM_COMMIT
 #define DS4_LAGUNA_DIR_NAME "ds4-laguna-s21"
-#define DS4_QWEN_UPSTREAM_COMMIT "66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8"
+#define DS4_QWEN_UPSTREAM_COMMIT "ff4f0ff4fdff70d6b7c3941ef437b91dde960e14"
 #define DS4_QWEN_ARCHIVE_URL "https://codeload.github.com/ivanfioravanti/ds4-metal/tar.gz/" DS4_QWEN_UPSTREAM_COMMIT
 #define DS4_QWEN_DIR_NAME "ds4-qwen38"
 #define MODEL_QWEN "gguf/Qwen3.8-Flash-Next-Q4KImatrixExperts-MXFP4Down-BF16Emb-BF16Control-Q8GDN-Q8QSA-Q8Shared-Q8Out.gguf"
 #define MODEL_QWEN_PLE "gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
 /* Separate architecture/runtime from Qwen3.8. Keep the tested quant explicit. */
-#define DS4_QWEN35_UPSTREAM_COMMIT "60fca11f0c8b16ca50c757324dddd717ba043098"
+#define DS4_QWEN35_UPSTREAM_COMMIT "73434c4bb9d8bb18425a2577edada69d25d44c47"
 #define DS4_QWEN35_ARCHIVE_URL "https://codeload.github.com/vagrillo/ds4/tar.gz/" DS4_QWEN35_UPSTREAM_COMMIT
 #define DS4_QWEN35_DIR_NAME "ds4-qwen35"
 #define MODEL_QWEN35 "gguf/Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf"
 #define MODEL_QWEN35_BYTES 31843777504LL
+
+/* Dense 27B candidate: q36 retains its own API, tokenizer and GPU runtime.
+ * Installer support is distinct from application-mode/quality qualification. */
+#define Q36_UPSTREAM_COMMIT "8362010a301b3360296e435703f58ffc230a024a"
+#define Q36_ARCHIVE_URL "https://codeload.github.com/Ninnix/q36/tar.gz/" Q36_UPSTREAM_COMMIT
+#define Q36_DIR_NAME "q36"
+#define MODEL_QWEN27 "gguf/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+#define MODEL_QWEN27_VISION "gguf/Qwen3.8-27B-mmproj-F16.gguf"
+#define MODEL_QWEN27_BYTES 25299061664LL
+#define MODEL_QWEN27_VISION_BYTES 927607488LL
 
 #include "../extension/design/design_system_catalog.h"
 
@@ -376,6 +387,12 @@ static char *ds4_strndup_local(const char *s, size_t n) {
 /* Model variants the UI can pick: flash = the official chat-tuned Flash IQ2XXS,
  * pro = the official V4-Pro IQ2XXS. Abliterated remains an explicit GGUF pick. */
 #define MODEL_FLASH MODEL_STD
+#define MODEL_DS41_Q2 "gguf/DeepSeek-V4.1-Flash-Q2.gguf"
+#define MODEL_DS41_Q2_BYTES 365713686528LL
+#define MODEL_DS41_Q4 "gguf/DeepSeek-V4.1-Flash-Q4.gguf"
+#define MODEL_DS41_Q4_BYTES 518596067328LL
+#define MODEL_DS41_VISION "gguf/DeepSeek-V4.1-Flash-Vision.gguf"
+#define MODEL_DS41_VISION_BYTES 970555552LL
 #define MODEL_PRO   "gguf/DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix-0813.gguf"
 #define MODEL_LAGUNA "gguf/laguna-s-2.1-Q4_K_M.gguf"
 #define MODEL_GLM53_Q2 "gguf/GLM-5.3-Flash-Q2.gguf"
@@ -443,11 +460,25 @@ typedef struct {
 typedef struct {
     int server_pld;
     char *skill_sys;
+    const char *runtime_dir; /* borrowed from the owned q36 launch candidate */
 } launch_prepared;
 static int launch_preparation_busy(void);
 static void launch_preparation_tick(void);
 static void launch_preparation_shutdown(void);
 static int launch_prepare_cli(int argc, char **argv);
+static int setup_install_engine(const char *engine, const char *root,
+                                char *target, size_t targetsz, int *downloaded,
+                                char *err, size_t errsz);
+static int q36_running(void);
+static int q36_ready(void);
+static int q36_vision_ready(void);
+static void q36_request_stop(const char *reason);
+static void q36_tick(void);
+static void q36_shutdown(void);
+static int q36_endpoint(char *url, size_t cap);
+static void q36_bind_frontend(pid_t pid);
+static unsigned long long q36_rpc_owner(pid_t *pid, char *url, size_t cap);
+static int q36_rpc_current(pid_t pid, unsigned long long generation);
 static int g_launch_adopt = 0;
 static char g_launch_executable[DSTUDIO_PATH_MAX];
 static volatile sig_atomic_t g_launch_worker_cancel = 0;
@@ -542,8 +573,10 @@ static char g_engine_err[256] = "";       /* why the engine last died, surfaced 
  * tool events without changing the ds4-agent wire protocol. */
 static void dtg_watchdog_observe_event_line(const char *line);
 static void dtg_agent_owner_release_if_terminal(void);
+static int display_prompt_is_guided_analysis(const char *display);
+static const char *agent_turn_think_preflight(int force_think_max, char *err, size_t errsz);
 static int dtg_agent_submit_for_graph(const char *title, const char *prompt,
-                                      const char *display_prompt,
+                                      const char *display_prompt, int force_think_max,
                                       unsigned long long *task_id,
                                       size_t *transcript_from,
                                       char *err, size_t errsz);
@@ -1695,6 +1728,13 @@ static void api_iogpu_wired_limit(int fd, const char *body) {
 
 static json_dyn_buf g_child_event_line = {0};
 static int g_child_event_active = 0;
+enum { CHILD_EVENT_PREFIX = 1, CHILD_EVENT_DISPLAY, CHILD_EVENT_MODEL, CHILD_EVENT_DISCARD };
+static char g_child_event_header[128];
+static size_t g_child_event_header_len;
+static unsigned long long g_child_event_epoch;
+static char g_child_stdout_pending[8192];
+static size_t g_child_stdout_len, g_child_stdout_used;
+#define CHILD_PIPE_PASS_BYTES (64u * 1024u)
 
 static void cstr_copy(char *dst, size_t dstsz, const char *src) {
     if (!dstsz) return;
@@ -1726,60 +1766,46 @@ static char *json_get_string_alloc_rpc(const char *body, const char *key) {
     p++;
     while (*p && isspace((unsigned char)*p)) p++;
     if (*p != '"') return NULL;
-    p++;
-    json_dyn_buf out = {0};
+    const char *start = p++;
     while (*p) {
-        unsigned char c = (unsigned char)*p++;
-        if (c == '"') return out.ptr ? out.ptr : ds4_strdup_local("");
-        if (c != '\\') {
-            if (!json_dyn_putn(&out, (const char *)&c, 1)) { free(out.ptr); return NULL; }
-            continue;
-        }
-        c = (unsigned char)*p++;
-        switch (c) {
-            case '"':  if (!json_dyn_puts(&out, "\"")) { free(out.ptr); return NULL; } break;
-            case '\\': if (!json_dyn_puts(&out, "\\")) { free(out.ptr); return NULL; } break;
-            case '/':  if (!json_dyn_puts(&out, "/")) { free(out.ptr); return NULL; } break;
-            case 'b':  if (!json_dyn_putn(&out, "\b", 1)) { free(out.ptr); return NULL; } break;
-            case 'f':  if (!json_dyn_putn(&out, "\f", 1)) { free(out.ptr); return NULL; } break;
-            case 'n':  if (!json_dyn_putn(&out, "\n", 1)) { free(out.ptr); return NULL; } break;
-            case 'r':  if (!json_dyn_putn(&out, "\r", 1)) { free(out.ptr); return NULL; } break;
-            case 't':  if (!json_dyn_putn(&out, "\t", 1)) { free(out.ptr); return NULL; } break;
-            case 'u': {
-                if (p[0] && p[1] && p[2] && p[3]) {
-                    char hx[5] = { p[0], p[1], p[2], p[3], 0 };
-                    long v = strtol(hx, NULL, 16);
-                    p += 4;
-                    char tmp[4];
-                    size_t n = 0;
-                    if (v >= 0 && v <= 0x7f) tmp[n++] = (char)v;
-                    else if (v < 0x800) {
-                        tmp[n++] = (char)(0xc0 | (v >> 6));
-                        tmp[n++] = (char)(0x80 | (v & 0x3f));
-                    } else {
-                        tmp[n++] = '?';
-                    }
-                    if (!json_dyn_putn(&out, tmp, n)) { free(out.ptr); return NULL; }
-                }
-                break;
-            }
-            default:
-                if (!json_dyn_putn(&out, (const char *)&c, 1)) { free(out.ptr); return NULL; }
-                break;
-        }
+        if (*p == '"') return dstudio_wire_string(start, p + 1);
+        if (*p++ == '\\') { if (!*p) return NULL; p++; }
     }
-    free(out.ptr);
     return NULL;
 }
+
+/* One completion owns these private partial calls. Nothing executable is
+ * published before terminal validation. Allocate only when tools occur. */
+#define MODEL_RPC_CALLS_MAX 16
+#define MODEL_RPC_ARGUMENT_MAX (1024u * 1024u)
+#define MODEL_RPC_TOOL_BYTES_MAX (2u * 1024u * 1024u)
+#define MODEL_RPC_SSE_LINE_MAX (2u * 1024u * 1024u)
+typedef struct {
+    char id[129];
+    char name[129];
+    json_dyn_buf arguments;
+    int seen;
+    int function_type;
+} model_rpc_call;
 
 typedef struct {
     int id;
     int in_fd;
+    int framed_output;
     char base_url[1024];
+    char api_key[256];
     char *body;
     int done;
     char finish_reason[32];
+    char error[256];
+    model_rpc_call *calls;
+    int call_count;
+    size_t tool_bytes;
 } model_rpc_job;
+
+static void model_rpc_sse_line(model_rpc_job *job, const char *line);
+static int model_rpc_complete(model_rpc_job *job, char *err, size_t errsz);
+static void model_rpc_release(model_rpc_job *job);
 
 static int model_rpc_parse_base(const char *base, char *host, size_t hostsz, int *port) {
     if (!base || strncmp(base, "http://", 7) != 0) return 0;
@@ -1860,34 +1886,27 @@ static int model_rpc_write_frame(model_rpc_job *job,
     }
     ok = ok && json_dyn_puts(&out, "}\n");
     if (!ok) { free(out.ptr); return 0; }
-    int rc = fd_write_all(job->in_fd, out.ptr, out.len);
+    /* Private worker IPC is length-framed. Only the host owner can unwrap it
+     * into the runtime pipe; the worker never inherits that descriptor. */
+    int rc = 1;
+    if (job->framed_output) {
+        char header[32];
+        int terminal = !strcmp(type, "model_done") || !strcmp(type, "model_error");
+        int n = snprintf(header, sizeof header, "%c %zu\n", terminal ? 'F' : 'D', out.len);
+        rc = n > 0 && (size_t)n < sizeof header && fd_write_all(job->in_fd, header, (size_t)n);
+    }
+    rc = rc && fd_write_all(job->in_fd, out.ptr, out.len);
     free(out.ptr);
     return rc;
 }
 
-static void model_rpc_sse_line(model_rpc_job *job, const char *line) {
-    if (strncmp(line, "data:", 5) != 0) return;
-    const char *p = line + 5;
-    while (*p == ' ' || *p == '\t') p++;
-    if (!strncmp(p, "[DONE]", 6)) {
-        job->done = 1;
-        return;
-    }
-    char *reasoning = json_get_string_alloc_rpc(p, "reasoning_content");
-    if (reasoning && reasoning[0]) model_rpc_write_frame(job, "model_delta", "reasoning", reasoning);
-    free(reasoning);
-    char *content = json_get_string_alloc_rpc(p, "content");
-    if (content && content[0]) model_rpc_write_frame(job, "model_delta", "content", content);
-    free(content);
-    char *finish = json_get_string_alloc_rpc(p, "finish_reason");
-    if (finish && finish[0])
-        snprintf(job->finish_reason, sizeof job->finish_reason, "%s", finish);
-    free(finish);
-}
-
 static void model_rpc_sse_bytes(model_rpc_job *job, const char *buf, size_t len, json_dyn_buf *line) {
     for (size_t i = 0; i < len && !job->done; i++) {
-        json_dyn_putn(line, buf + i, 1);
+        if (!buf[i] || line->len >= MODEL_RPC_SSE_LINE_MAX || !json_dyn_putn(line, buf + i, 1)) {
+            cstr_copy(job->error, sizeof job->error, "invalid or oversized model SSE line");
+            job->done = 1;
+            return;
+        }
         if (buf[i] == '\n') {
             model_rpc_sse_line(job, line->ptr ? line->ptr : "");
             line->len = 0;
@@ -1915,7 +1934,7 @@ static int model_rpc_chunked_bytes(model_rpc_job *job,
             st->skip_crlf = 0;
         }
         if (st->left == 0) {
-            json_dyn_putn(&st->size_line, &c, 1);
+            if (!c || st->size_line.len >= 128 || !json_dyn_putn(&st->size_line, &c, 1)) return 0;
             if (c != '\n') continue;
             char *end = NULL;
             unsigned long sz = strtoul(st->size_line.ptr ? st->size_line.ptr : "0", &end, 16);
@@ -1933,101 +1952,118 @@ static int model_rpc_chunked_bytes(model_rpc_job *job,
     return 1;
 }
 
-/* HTTPS remote endpoints (e.g. the DeepSeek API): the launcher's plain-socket
- * relay cannot do TLS, so stream through curl — the same dependency first-run
- * setup already requires. The Bearer key and the request body travel in 0600
- * temp files (never on the argv); curl de-chunks the response, so its stdout
- * is plain SSE bytes for the same parser as the LAN path. */
+/* TLS uses the installed curl, with no shell and no key/body in argv.
+ * Staging descriptors are unlinked before use: cancellation or a crash cannot
+ * leave named files containing credentials or the conversation. */
 static int model_rpc_curl_stream(model_rpc_job *job, char *err, size_t errsz) {
 #ifdef _WIN32
     snprintf(err, errsz, "https model endpoints are not supported on the Windows portable build yet");
     return 0;
 #else
+    char executable[DSTUDIO_PATH_MAX] = "", candidate[DSTUDIO_PATH_MAX];
+    const char *search = getenv("PATH");
+    if (!search) search = "/usr/bin:/bin";
+    while (*search) {
+        const char *end = strchr(search, ':');
+        size_t n = end ? (size_t)(end - search) : strlen(search);
+        if (n && n + 6 < sizeof candidate) {
+            memcpy(candidate, search, n); memcpy(candidate + n, "/curl", 6);
+            struct stat st;
+            if (!stat(candidate, &st) && S_ISREG(st.st_mode) && !access(candidate, X_OK)) {
+                cstr_copy(executable, sizeof executable, candidate); break;
+            }
+        }
+        if (!end) break;
+        search = end + 1;
+    }
+    if (!executable[0]) { snprintf(err, errsz, "curl is required for HTTPS model requests"); return 0; }
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0]) tmp = "/tmp";
-    char hpath[600], bpath[600];
-    snprintf(hpath, sizeof hpath, "%s/ds4ui-remote-h.XXXXXX", tmp);
-    snprintf(bpath, sizeof bpath, "%s/ds4ui-remote-b.XXXXXX", tmp);
-    int hfd = mkstemp(hpath);
-    if (hfd < 0) { snprintf(err, errsz, "could not create remote header file"); return 0; }
-    int bfd = mkstemp(bpath);
-    if (bfd < 0) { close(hfd); unlink(hpath); snprintf(err, errsz, "could not create remote body file"); return 0; }
-
-    json_dyn_buf hdrs = {0};
-    int ok = json_dyn_puts(&hdrs, "Content-Type: application/json\nAccept: text/event-stream\n");
-    if (g_remote_api_key[0])
-        ok = ok && json_dyn_printf(&hdrs, "Authorization: Bearer %s\n", g_remote_api_key);
-    const char *body = job->body ? job->body : "{}";
-    ok = ok && fd_write_all(hfd, hdrs.ptr ? hdrs.ptr : "", hdrs.len) &&
-         fd_write_all(bfd, body, strlen(body));
-    free(hdrs.ptr);
-    close(hfd);
-    close(bfd);
-    if (!ok) {
-        unlink(hpath); unlink(bpath);
-        snprintf(err, errsz, "could not stage the remote model request");
-        return 0;
+    char hpath[DSTUDIO_PATH_MAX], bpath[DSTUDIO_PATH_MAX];
+    if (snprintf(hpath, sizeof hpath, "%s/ds4ui-remote-h.XXXXXX", tmp) >= (int)sizeof hpath ||
+        snprintf(bpath, sizeof bpath, "%s/ds4ui-remote-b.XXXXXX", tmp) >= (int)sizeof bpath) {
+        snprintf(err, errsz, "remote staging directory is too long"); return 0;
     }
-
-    /* base_url passed remote_value_safe (no quotes/spaces/control bytes); the
-     * temp paths come from mkstemp under TMPDIR. Single-quote everything. */
-    size_t blen = strlen(job->base_url);
-    while (blen > 0 && job->base_url[blen - 1] == '/') job->base_url[--blen] = '\0';
-    /* --http1.1: SSE through CDN-fronted APIs (CloudFront et al) is prone to
-     * mid-stream h2 RST; plain HTTP/1.1 chunked streaming is the boring,
-     * reliable path. */
-    /* No --fail: on a 4xx/5xx the provider's JSON error document reaches
-     * stdout, and quoting it verbatim beats guessing what went wrong. */
-    char cmd[2200];
-    snprintf(cmd, sizeof cmd,
-             "curl -sN --http1.1 --max-time 1800 -H @'%s' --data-binary @'%s' '%s/v1/chat/completions'",
-             hpath, bpath, job->base_url);
-    FILE *p = popen(cmd, "r");
-    if (!p) {
-        unlink(hpath); unlink(bpath);
-        snprintf(err, errsz, "could not start curl for the remote model");
-        return 0;
+    int hfd = mkstemp(hpath), bfd = -1, out[2] = {-1, -1}, null = -1;
+    if (hfd >= 0) {
+        if (unlink(hpath)) { close(hfd); snprintf(err, errsz, "could not unlink private request headers"); return 0; }
+        bfd = mkstemp(bpath);
+        if (bfd >= 0 && unlink(bpath)) { close(bfd); close(hfd); snprintf(err, errsz, "could not unlink private request body"); return 0; }
     }
+    if (hfd < 0 || bfd < 0) goto stage_fail;
+    json_dyn_buf headers = {0};
+    int ok = json_dyn_puts(&headers, "Content-Type: application/json\nAccept: text/event-stream\n");
+    if (job->api_key[0]) ok = ok && json_dyn_printf(&headers, "Authorization: Bearer %s\n", job->api_key);
+    ok = ok && fd_write_all(hfd, headers.ptr ? headers.ptr : "", headers.len) &&
+         fd_write_all(bfd, job->body ? job->body : "{}", strlen(job->body ? job->body : "{}"));
+    if (headers.ptr) memset(headers.ptr, 0, headers.len);
+    free(headers.ptr);
+    if (!ok || lseek(hfd, 0, SEEK_SET) < 0 || lseek(bfd, 0, SEEK_SET) < 0) goto stage_fail;
+    /* High source descriptors avoid dup2 collisions with stdout and 3/4. */
+    int high = fcntl(hfd, F_DUPFD_CLOEXEC, 5);
+    close(hfd); hfd = high;
+    high = fcntl(bfd, F_DUPFD_CLOEXEC, 5);
+    close(bfd); bfd = high;
+    if (hfd < 0 || bfd < 0 || pipe(out) || (null = open("/dev/null", O_RDWR)) < 0) goto stage_fail;
+    char url[1200];
+    size_t base_len = strlen(job->base_url);
+    while (base_len && job->base_url[base_len - 1] == '/') base_len--;
+    snprintf(url, sizeof url, "%.*s/v1/chat/completions", (int)base_len, job->base_url);
+    char *args[] = {executable, "-sN", "--http1.1", "--max-time", "1800",
+                   "-H", "@/dev/fd/3", "--data-binary", "@/dev/fd/4", url, NULL};
+    long maxfd = sysconf(_SC_OPEN_MAX); if (maxfd < 0) maxfd = 1024;
+    pid_t child = fork();
+    if (child < 0) goto stage_fail;
+    if (!child) {
+        if (dup2(out[1], STDOUT_FILENO) < 0 || dup2(null, STDIN_FILENO) < 0 ||
+            dup2(null, STDERR_FILENO) < 0 || dup2(hfd, 3) < 0 || dup2(bfd, 4) < 0) _exit(127);
+        for (int fd = 5; fd < maxfd; fd++) close(fd);
+        execv(executable, args); _exit(127);
+    }
+    close(hfd); close(bfd); close(null); close(out[1]);
     json_dyn_buf sse_line = {0};
-    char preview[400];
-    size_t pn = 0;
-    char buf[8192];
-    size_t n;
-    while (!job->done && (n = fread(buf, 1, sizeof buf, p)) > 0) {
-        if (pn < sizeof preview - 1) {
-            size_t c = sizeof preview - 1 - pn;
-            if (c > n) c = n;
-            memcpy(preview + pn, buf, c);
-            pn += c;
-            preview[pn] = '\0';
-        }
-        model_rpc_sse_bytes(job, buf, n, &sse_line);
+    char preview[400] = "", bytes[8192]; size_t preview_len = 0;
+    while (!job->done) {
+        ssize_t n = read(out[0], bytes, sizeof bytes);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        size_t take = sizeof preview - 1 - preview_len;
+        if (take > (size_t)n) take = (size_t)n;
+        memcpy(preview + preview_len, bytes, take); preview_len += take; preview[preview_len] = '\0';
+        model_rpc_sse_bytes(job, bytes, (size_t)n, &sse_line);
     }
     if (!job->done && sse_line.len) model_rpc_sse_line(job, sse_line.ptr);
-    int rc = pclose(p);
+    close(out[0]);
+    int status = 0;
+    if (waitpid(child, &status, WNOHANG) == 0) {
+        /* DONE does not require waiting for an idle provider to close SSE. */
+        kill(child, SIGTERM);
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    }
     free(sse_line.ptr);
-    unlink(hpath);
-    unlink(bpath);
+    if (job->error[0]) { cstr_copy(err, errsz, job->error); return 0; }
     if (!job->done) {
-        /* No [DONE] sentinel — but if the stream already delivered a
-         * finish_reason the completion is semantically finished: some
-         * CDN-fronted providers reset the connection right after the final
-         * chunk (curl exit 56) and retrying would only re-bill the turn. */
-        if (job->finish_reason[0]) return 1;
-        if (pn && strncmp(preview, "data:", 5) != 0) {
-            for (size_t i = 0; i < pn; i++)
-                if ((unsigned char)preview[i] < 0x20) preview[i] = ' ';
-            snprintf(err, errsz, "remote API error: %.300s", preview);
-            return 0;
+        /* Retain the established plain-text finish-reason tolerance; an
+         * unfinished tool batch is never promoted by this provider workaround. */
+        if (job->finish_reason[0] && !job->call_count) return model_rpc_complete(job, err, errsz);
+        if (preview_len && strncmp(preview, "data:", 5)) {
+            for (size_t i = 0; i < preview_len; i++) if ((unsigned char)preview[i] < 0x20) preview[i] = ' ';
+            snprintf(err, errsz, "remote API error: %.300s", preview); return 0;
         }
-        int code = rc > 255 ? rc >> 8 : rc;
-        snprintf(err, errsz, "remote model stream ended before completion (curl exit %d)", code);
+        snprintf(err, errsz, "remote model stream ended before completion (curl exit %d)",
+                 WIFEXITED(status) ? WEXITSTATUS(status) : -1);
         return 0;
     }
-    return 1;
+    return model_rpc_complete(job, err, errsz);
+stage_fail:
+    if (hfd >= 0) close(hfd);
+    if (bfd >= 0) close(bfd);
+    if (null >= 0) close(null);
+    if (out[0] >= 0) close(out[0]);
+    if (out[1] >= 0) close(out[1]);
+    snprintf(err, errsz, "could not stage the remote model request"); return 0;
 #endif
 }
-
 static int model_rpc_http_stream(model_rpc_job *job, char *err, size_t errsz) {
     if (!strncmp(job->base_url, "https://", 8))
         return model_rpc_curl_stream(job, err, errsz);
@@ -2052,10 +2088,12 @@ static int model_rpc_http_stream(model_rpc_job *job, char *err, size_t errsz) {
         "Host: %s:%d\r\n"
         "Accept: text/event-stream\r\n"
         "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n\r\n",
-        host, port, body_len) &&
-        json_dyn_putn(&req, job->body ? job->body : "{}", body_len);
+        "Content-Length: %zu\r\n",
+        host, port, body_len);
+    if (job->api_key[0]) ok = ok && !strchr(job->api_key, '\r') && !strchr(job->api_key, '\n') &&
+        json_dyn_printf(&req, "Authorization: Bearer %s\r\n", job->api_key);
+    ok = ok && json_dyn_puts(&req, "Connection: close\r\n\r\n") &&
+         json_dyn_putn(&req, job->body ? job->body : "{}", body_len);
     if (!ok || send_all(fd, req.ptr ? req.ptr : "", req.len) != 0) {
         free(req.ptr);
         close(fd);
@@ -2112,6 +2150,7 @@ static int model_rpc_http_stream(model_rpc_job *job, char *err, size_t errsz) {
         if (job->done) break;
     }
     if (!job->done && sse_line.len) model_rpc_sse_line(job, sse_line.ptr);
+    if (job->error[0]) { cstr_copy(err, errsz, job->error); goto fail; }
     if (!job->done) {
         snprintf(err, errsz, "LAN model stream ended before completion%s%s",
                  job->finish_reason[0] ? " (finish_reason=" : "",
@@ -2123,7 +2162,7 @@ static int model_rpc_http_stream(model_rpc_job *job, char *err, size_t errsz) {
     free(sse_line.ptr);
     free(ch.size_line.ptr);
     close(fd);
-    return 1;
+    return model_rpc_complete(job, err, errsz);
 
 fail:
     free(head.ptr);
@@ -2133,49 +2172,7 @@ fail:
     return 0;
 }
 
-#ifdef _WIN32
-static DWORD WINAPI model_rpc_thread_main(LPVOID arg)
-#else
-static void *model_rpc_thread_main(void *arg)
-#endif
-{
-    model_rpc_job *job = (model_rpc_job *)arg;
-    char err[512] = "";
-    if (model_rpc_http_stream(job, err, sizeof err))
-        model_rpc_write_frame(job, "model_done", NULL, NULL);
-    else
-        model_rpc_write_frame(job, "model_error", NULL, err[0] ? err : "LAN model request failed");
-    free(job->body);
-    free(job);
-#ifdef _WIN32
-    return 0;
-#else
-    return NULL;
-#endif
-}
-
-static int model_rpc_start(int id, char *body) {
-    model_rpc_job *job = (model_rpc_job *)calloc(1, sizeof *job);
-    if (!job) { free(body); return 0; }
-    job->id = id;
-    job->in_fd = g_in_fd;
-    job->body = body;
-    snprintf(job->base_url, sizeof job->base_url, "%s", g_remote_base_url);
-#ifdef _WIN32
-    HANDLE h = CreateThread(NULL, 0, model_rpc_thread_main, job, 0, NULL);
-    if (!h) { free(job->body); free(job); return 0; }
-    CloseHandle(h);
-#else
-    pthread_t th;
-    if (pthread_create(&th, NULL, model_rpc_thread_main, job) != 0) {
-        free(job->body);
-        free(job);
-        return 0;
-    }
-    pthread_detach(th);
-#endif
-    return 1;
-}
+#include "dstudio_model_rpc.c"
 
 /* ==================== model / kv / port ==================== */
 
@@ -2187,6 +2184,51 @@ static char  g_dl_variant[48] = "";  /* download_model.sh target */
 static char  g_dl_rel[1024] = "";    /* expected final GGUF, relative to the active checkout */
 static long long g_dl_expected_bytes = 0;
 static int g_dl_result = 0;          /* 0 running/unknown, 1 completed, -1 failed */
+/* Cold, single download-owner state. Progress is bound to the admitted store,
+ * never to a later model selection. The pipe carries only bounded phase hints;
+ * successful installer/downloader exit remains the completion authority. */
+static char g_dl_directory[DSTUDIO_PATH_MAX] = "";
+static int g_dl_progress_fd = -1, g_dl_phase = 0, g_dl_stop_requested = 0;
+
+static const char *model_download_phase(void) {
+    if (g_dl_pid <= 0) return g_dl_result > 0 ? "complete" :
+        g_dl_result < 0 ? (g_dl_stop_requested ? "stopped" : "failed") : "";
+    return g_dl_phase == 'I' ? "installing" : g_dl_phase == 'V' ? "verifying" : "downloading";
+}
+
+static void model_download_progress_tick(void) {
+#ifndef _WIN32
+    if (g_dl_progress_fd < 0) return;
+    char phases[32];
+    ssize_t n = read(g_dl_progress_fd, phases, sizeof phases);
+    for (ssize_t i = 0; i < n; i++)
+        if (phases[i] == 'D' || phases[i] == 'V') g_dl_phase = phases[i];
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
+        close(g_dl_progress_fd); g_dl_progress_fd = -1;
+    }
+#endif
+}
+
+/* Two fixed pinned components, not an unbounded directory scan. This is byte
+ * progress only: a final-looking name or a full partial is NOT verification. */
+static long long qwen27_download_bytes(const char *checkout, int *has_partial) {
+    const char *files[] = {MODEL_QWEN27, MODEL_QWEN27_VISION};
+    const long long limits[] = {MODEL_QWEN27_BYTES, MODEL_QWEN27_VISION_BYTES};
+    long long total = 0;
+    if (has_partial) *has_partial = 0;
+    for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+        char file[DSTUDIO_PATH_MAX + 1024]; struct stat st;
+        snprintf(file, sizeof file, "%s/%s", checkout, files[i]);
+        long long complete = lstat(file, &st) == 0 && S_ISREG(st.st_mode) ? st.st_size : 0;
+        const char *name = strrchr(files[i], '/'); name = name ? name + 1 : files[i];
+        snprintf(file, sizeof file, "%s/gguf/.dstudio-qwen27-downloads/%s/data.part", checkout, name);
+        long long part = lstat(file, &st) == 0 && S_ISREG(st.st_mode) ? st.st_size : 0;
+        if (part > 0 && has_partial) *has_partial = 1;
+        long long have = complete > part ? complete : part;
+        total += have < limits[i] ? have : limits[i];
+    }
+    return total;
+}
 static char  g_model_override[1024] = ""; /* explicit GGUF the user picked (rel to ds4 dir); "" = use the variant */
 static char  g_skill[64] = "";            /* active user-authored skill id; "" = none */
 static char  g_design_system[64] = "";    /* active design-system id (design only); "" = none */
@@ -2204,6 +2246,12 @@ static void model_download_details(const char *target, char *rel, size_t relsz,
     long long bytes = 0;
     if (!strcmp(target, "flash-abliterated")) {
         file = MODEL_UNC; bytes = MODEL_ABLITERATED_EXPECTED_BYTES;
+    } else if (!strcmp(target, "ds41f-q2")) {
+        file = MODEL_DS41_Q2; bytes = MODEL_DS41_Q2_BYTES;
+    } else if (!strcmp(target, "ds41f-q4")) {
+        file = MODEL_DS41_Q4; bytes = MODEL_DS41_Q4_BYTES;
+    } else if (!strcmp(target, "ds41f-vision")) {
+        file = MODEL_DS41_VISION; bytes = MODEL_DS41_VISION_BYTES;
     } else if (!strcmp(target, "ds4f-q2")) {
         file = "gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf";
         bytes = 87000000000LL;
@@ -2242,15 +2290,93 @@ static void model_download_details(const char *target, char *rel, size_t relsz,
         file = MODEL_QWEN; /* Multi-file progress is indeterminate until exit. */
     } else if (!strcmp(target, "qwen36-q6")) {
         file = MODEL_QWEN35; bytes = MODEL_QWEN35_BYTES;
+    } else if (!strcmp(target, "qwen27-q6")) {
+        file = MODEL_QWEN27; bytes = MODEL_QWEN27_BYTES + MODEL_QWEN27_VISION_BYTES;
     }
     cstr_copy(rel, relsz, file);
     if (expected_bytes) *expected_bytes = bytes;
 }
 
+static int model_download_is_ds41(const char *target) {
+    return target && (!strcmp(target, "ds41f-q2") || !strcmp(target, "ds41f-q4") ||
+                      !strcmp(target, "ds41f-vision"));
+}
+
+/* Byte progress is not verification. Bind HF's opaque temporaries to the
+ * pinned artifact digest; another download's large partial must not advance
+ * this model. The control loop scans at most 512 cache names, not file bytes.
+ * Duplicate retries contribute their maximum, never their sum. */
+static long long ds41_download_bytes(const char *checkout, const char *target,
+                                      int *has_partial) {
+    static const struct {
+        const char *file, *sha;
+        long long limit;
+    } artifacts[] = {
+        {MODEL_DS41_Q2, "1ce6a8f8806205c13330d7ca287bd198331dc5ca35ccc5d8a9a92a188a6f6f42", MODEL_DS41_Q2_BYTES},
+        {MODEL_DS41_Q4 ".part1", "6442b1f9224079662c02003c0ef9ef6be6e2aff509510f681dab9e6cc41df246", 480000000000LL},
+        {MODEL_DS41_Q4 ".part2", "7c3e10646c918eeaffbc39305a75ec96117450262c61454ff194cef00d7617f0", 38596067328LL},
+        {MODEL_DS41_VISION, "cc283f032b3e8b8d78aeb5fccaa14e97b859b0c53aae3cd6bffa690ddf0e9e15", MODEL_DS41_VISION_BYTES},
+    };
+    if (has_partial) *has_partial = 0;
+    if (!model_download_is_ds41(target)) return 0;
+    int first = !strcmp(target, "ds41f-q2") ? 0 : !strcmp(target, "ds41f-q4") ? 1 : 3;
+    int end = first == 1 ? 3 : first + 1;
+    long long present[4] = {0}, final_bytes = 0;
+    char final_rel[1024], file[DSTUDIO_PATH_MAX + 1100];
+    long long expected = 0;
+    model_download_details(target, final_rel, sizeof final_rel, &expected);
+    struct stat st;
+    snprintf(file, sizeof file, "%s/%s", checkout, final_rel);
+    if (lstat(file, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+        final_bytes = st.st_size < expected ? st.st_size : expected;
+    if (first == 1) {
+        snprintf(file, sizeof file, "%s/%s.assembling", checkout, final_rel);
+        if (lstat(file, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+            if (has_partial) *has_partial = 1;
+            if (st.st_size > final_bytes) final_bytes = st.st_size < expected ? st.st_size : expected;
+        }
+    }
+    for (int i = first; i < end; i++) {
+        snprintf(file, sizeof file, "%s/%s", checkout, artifacts[i].file);
+        if (lstat(file, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+            present[i] = st.st_size < artifacts[i].limit ? st.st_size : artifacts[i].limit;
+            if (first == 1 && has_partial) *has_partial = 1;
+        }
+    }
+    char cache[DSTUDIO_PATH_MAX + 64];
+    snprintf(cache, sizeof cache, "%s/gguf/.cache/huggingface/download", checkout);
+    DIR *dir = opendir(cache);
+    if (dir) {
+        struct dirent *de;
+        size_t visited = 0;
+        while (visited++ < 512 && (de = readdir(dir)) != NULL) {
+            size_t n = strlen(de->d_name);
+            if (n < 11 || strcmp(de->d_name + n - 11, ".incomplete")) continue;
+            for (int i = first; i < end; i++) {
+                char identity[68];
+                snprintf(identity, sizeof identity, ".%s.", artifacts[i].sha);
+                if (!strstr(de->d_name, identity)) continue;
+                snprintf(file, sizeof file, "%s/%s", cache, de->d_name);
+                if (lstat(file, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) continue;
+                if (has_partial) *has_partial = 1;
+                long long bytes = st.st_size < artifacts[i].limit ? st.st_size : artifacts[i].limit;
+                if (bytes > present[i]) present[i] = bytes;
+            }
+        }
+        closedir(dir);
+    }
+    long long total = 0;
+    for (int i = first; i < end; i++) total += present[i];
+    return total > final_bytes ? total : final_bytes;
+}
+
 static long long model_download_bytes_present(void) {
     if (!g_dl_rel[0]) return 0;
+    const char *checkout = g_dl_directory[0] ? g_dl_directory : g_ds4_dir;
+    if (!strcmp(g_dl_variant, "qwen27-q6")) return qwen27_download_bytes(checkout, NULL);
+    if (model_download_is_ds41(g_dl_variant)) return ds41_download_bytes(checkout, g_dl_variant, NULL);
     char full[2048], part[2060];
-    snprintf(full, sizeof full, "%s/%s", g_ds4_dir, g_dl_rel);
+    snprintf(full, sizeof full, "%s/%s", checkout, g_dl_rel);
     snprintf(part, sizeof part, "%s.part", full);
     struct stat st;
     if (stat(full, &st) == 0 && S_ISREG(st.st_mode)) return (long long)st.st_size;
@@ -2259,7 +2385,7 @@ static long long model_download_bytes_present(void) {
     /* Older managed checkouts may still contain Hugging Face's opaque
      * .incomplete file. Use the largest resumable copy immediately. */
     char cache[2048];
-    snprintf(cache, sizeof cache, "%s/gguf/.cache/huggingface/download", g_ds4_dir);
+    snprintf(cache, sizeof cache, "%s/gguf/.cache/huggingface/download", checkout);
     DIR *d = opendir(cache);
     if (!d) return 0;
     long long best = 0;
@@ -2300,6 +2426,35 @@ static long long hf_partial_bytes_in_checkout(const char *checkout) {
 static int paused_model_download(char *target, size_t targetsz,
                                  long long *bytes, long long *expected) {
     if (g_dl_pid > 0) return 0;
+    int q27_partial = 0;
+    const char *checkout = !strcmp(g_dl_variant, "qwen27-q6") && g_dl_directory[0]
+        ? g_dl_directory : g_ds4_dir;
+    long long q27_bytes = qwen27_download_bytes(checkout, &q27_partial);
+    if (q27_partial) {
+        cstr_copy(target, targetsz, "qwen27-q6");
+        if (bytes) *bytes = q27_bytes;
+        if (expected) *expected = MODEL_QWEN27_BYTES + MODEL_QWEN27_VISION_BYTES;
+        return 1;
+    }
+
+    static const char *ds41_targets[] = {"ds41f-q2", "ds41f-q4", "ds41f-vision"};
+    for (size_t i = 0; i < sizeof ds41_targets / sizeof ds41_targets[0]; i++) {
+        const char *store = !strcmp(g_dl_variant, ds41_targets[i]) && g_dl_directory[0]
+            ? g_dl_directory : g_ds4_dir;
+        int partial = 0;
+        long long have = ds41_download_bytes(store, ds41_targets[i], &partial);
+        if (!partial) continue;
+        char rel[1024], final[DSTUDIO_PATH_MAX + 1100];
+        long long want;
+        struct stat st;
+        model_download_details(ds41_targets[i], rel, sizeof rel, &want);
+        snprintf(final, sizeof final, "%s/%s", store, rel);
+        if (lstat(final, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == want) continue;
+        cstr_copy(target, targetsz, ds41_targets[i]);
+        if (bytes) *bytes = have;
+        if (expected) *expected = want;
+        return 1;
+    }
 
     /* Every main downloader target uses a stable, visible .part beside its
      * final GGUF. Find it after an app restart so Resume/Delete still work. */
@@ -2617,25 +2772,47 @@ static int model_file_is_glm(const char *rel) {
     return strstr(base ? base + 1 : rel, "GLM") != NULL;
 }
 static int model_is_glm(void) { return model_file_is_glm(current_model_rel()); }
+static int model_file_is_deepseek41(const char *rel) {
+    if (!rel) return 0;
+    const char *base = strrchr(rel, '/');
+    const char *name = base ? base + 1 : rel;
+    return mem_contains_ci(name, strlen(name), "deepseek-v4.1-flash-");
+}
 static int model_file_is_deepseek_vision(const char *rel) {
     const char *base = strrchr(rel, '/');
     const char *name = base ? base + 1 : rel;
     return mem_contains_ci(name, strlen(name), "deepseek-v4-flash-vision-exp");
 }
-static int model_is_deepseek_vision(void) { return model_file_is_deepseek_vision(current_model_rel()); }
 static int model_file_is_auxiliary(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
     return mem_contains_ci(name, len, "dspark-support") ||
+           mem_contains_ci(name, len, "qwen3.8-27b-mmproj-") ||
            (mem_contains_ci(name, len, "qwen3.8") &&
             (mem_contains_ci(name, len, "-ple-") || mem_contains_ci(name, len, "-mtp."))) ||
            mem_contains_ci(name, len, "glm-5.3-flash-vision-encoder") ||
+           mem_contains_ci(name, len, "deepseek-v4.1-flash-vision") ||
            mem_contains_ci(name, len, "deepseek-v4-flash-vision-encoder");
 }
 static int model_file_is_supported(const char *name) {
     if (!name) return 0;
     size_t len = strlen(name);
     if (model_file_is_auxiliary(name)) return 0;
+    if (model_file_is_deepseek41(name)) {
+#ifndef __APPLE__
+        return 0; /* Upstream V4.1 currently implements Metal only. */
+#else
+        const char *base = strrchr(name, '/');
+        return !strcmp(base ? base + 1 : name, &MODEL_DS41_Q2[5]) ||
+               !strcmp(base ? base + 1 : name, &MODEL_DS41_Q4[5]);
+#endif
+    }
+    /* The dense Qwen route admits only the pinned checkpoint representation;
+     * native preflight also requires its separate managed q36 engine. */
+    if (mem_contains_ci(name, len, "qwen3.8-27b")) {
+        const char *base = strrchr(name, '/');
+        return !strcmp(base ? base + 1 : name, &MODEL_QWEN27[5]);
+    }
     if (mem_contains_ci(name, len, "qwen3.6") || mem_contains_ci(name, len, "qwen3.5")) {
         const char *base = strrchr(name, '/');
         return !strcmp(base ? base + 1 : name, &MODEL_QWEN35[5]);
@@ -2661,6 +2838,15 @@ static int model_file_is_qwen38(const char *rel) {
 static int model_is_qwen38(void) {
     return model_file_is_qwen38(current_model_rel());
 }
+static int model_file_is_qwen27(const char *rel) {
+    if (!rel) return 0;
+    const char *base = strrchr(rel, '/');
+    return !strcmp(base ? base + 1 : rel, &MODEL_QWEN27[5]);
+}
+static int selected_checkout_is_q36(void) {
+    const char *base = strrchr(g_ds4_dir, '/');
+    return !strcmp(base ? base + 1 : g_ds4_dir, Q36_DIR_NAME);
+}
 static int model_is_qwen(void) { return model_is_qwen38() || model_is_qwen35(); }
 static int selected_checkout_is_qwen35(void) {
     const char *base = strrchr(g_ds4_dir, '/');
@@ -2682,6 +2868,11 @@ static int selected_checkout_is_qwen(void) {
 static int native_launch_mode_supported(int mode, const char *model_rel,
                                        int remote, char *err, size_t errsz) {
     if (remote || mode == ENGINE_SERVER) return 1;
+    if (model_file_is_qwen27(model_rel) || selected_checkout_is_q36()) {
+        if (mode == ENGINE_AGENT || mode == ENGINE_COWORK) return 1;
+        snprintf(err, errsz, "Qwen27B's Design connection is not implemented");
+        return 0;
+    }
     if ((model_file_is_qwen38(model_rel) || model_file_is_qwen35(model_rel)) &&
         (mode == ENGINE_AGENT || mode == ENGINE_COWORK)) return 1;
     if (!model_file_is_qwen35(model_rel) && !model_file_is_qwen38(model_rel) &&
@@ -2694,7 +2885,8 @@ static int native_launch_mode_supported(int mode, const char *model_rel,
 /* The Qwen3.6 fork's disk payload omits its recurrent state. Conversations and
  * the live session remain usable; a disk checkpoint cannot promise resumption. */
 static int agent_disk_checkpoints_supported(void) {
-    return MODE_IS_PIPED(g_mode) && (g_remote_base_url[0] || !model_is_qwen35());
+    return MODE_IS_PIPED(g_mode) && (g_remote_base_url[0] ||
+        (!model_is_qwen35() && !model_file_is_qwen27(current_model_rel())));
 }
 static int model_is_flash(void) {
     const char *rel = current_model_rel();
@@ -2738,6 +2930,10 @@ static const char *native_vision_encoder_rel_for_model(const char *model_rel) {
 #ifdef _WIN32
     (void)model_rel;
 #else
+    if (model_file_is_qwen27(model_rel)) return MODEL_QWEN27_VISION;
+#ifdef __APPLE__
+    if (model_file_is_deepseek41(model_rel)) return MODEL_DS41_VISION;
+#endif
     if (model_file_is_glm(model_rel)) return MODEL_GLM53_VISION;
     if (model_file_is_deepseek_vision(model_rel)) return MODEL_DSVISION_ENCODER;
 #endif
@@ -2913,6 +3109,10 @@ static int normalize_flash_memory_request(engine_cfg *cfg, int remote_model,
     const char *base = strrchr(model_rel, '/');
     const char *name = base ? base + 1 : model_rel;
     const int is_flash = mem_contains_ci(name, strlen(name), "deepseek-v4-flash");
+    /* q36 validates its own capabilities. Do not erase an explicit unsupported
+     * request before native_launch_preflight can reject it. */
+    if (!remote_model && (model_file_is_qwen27(model_rel) ||
+                          model_file_is_deepseek41(model_rel))) return 1;
     /* DSpark is an external DeepSeek Flash draft model. GLM 5.3 has its own
      * integrated MTP block, so a persisted DSpark toggle must never attach a
      * DeepSeek support GGUF to GLM (or to another model family). */
@@ -2992,8 +3192,18 @@ static int model_ssd_streaming(const engine_cfg *cfg, int remote_model,
                                char *err, size_t errsz) {
     if (reason && reasonsz) reason[0] = '\0';
     if (err && errsz) err[0] = '\0';
+    if (!remote_model && model_file_is_qwen27(model_rel)) {
+        if (cfg && cfg->ssd_streaming == SSD_STREAMING_ON) {
+            snprintf(err, errsz, "Qwen27B is a dense model; expert SSD streaming is not supported");
+            return -1;
+        }
+        snprintf(reason, reasonsz, "Qwen27B keeps its dense weights in RAM; disk KV is a separate setting");
+        return 0;
+    }
     if (!cfg || cfg->ssd_streaming == SSD_STREAMING_OFF) {
-        snprintf(reason, reasonsz, "%s", !remote_model && model_file_is_qwen35(model_rel)
+        snprintf(reason, reasonsz, "%s", !remote_model && model_file_is_deepseek41(model_rel)
+                 ? "Expert SSD streaming is off; V4.1 Engram remains disk-backed"
+                 : !remote_model && model_file_is_qwen35(model_rel)
                  ? "Qwen3.6 uses resident Metal weights; no PLE or expert SSD streaming"
                  : !remote_model && model_file_is_qwen38(model_rel)
                  ? "Qwen resident backbone; required PLE stays SSD-backed"
@@ -3049,7 +3259,9 @@ static int model_ssd_streaming(const engine_cfg *cfg, int remote_model,
     return 0;
 #else
     if (cfg->ssd_streaming == SSD_STREAMING_ON) {
-        snprintf(reason, reasonsz, "forced on by user");
+        snprintf(reason, reasonsz, "%s", model_file_is_deepseek41(model_rel)
+                 ? "Expert SSD streaming is on; V4.1 Engram remains separately disk-backed"
+                 : "forced on by user");
         return 1;
     }
     snprintf(reason, reasonsz, "auto disabled: DS4 is the sole active heavyweight model");
@@ -3064,6 +3276,19 @@ static int engine_effective_ssd_streaming(const engine_cfg *cfg, int remote_mode
                                reason, reasonsz, err, errsz);
 }
 
+/* q36 otherwise silently maps Max to High below its native 96k boundary.
+ * Launches and later Agent controls must admit the same requested semantics. */
+static const char *native_think_context_preflight(const engine_cfg *cfg, int mode,
+                                                  const char *model_rel, int remote,
+                                                  char *err, size_t errsz) {
+    if (!remote && model_file_is_qwen27(model_rel) && MODE_IS_PIPED(mode) &&
+        cfg->think == 2 && cfg->ctx < 98304) {
+        snprintf(err, errsz, "Qwen27B Max requires at least 98304 context tokens; choose a compatible context");
+        return "unsupported_context";
+    }
+    return NULL;
+}
+
 /* Read-only admission checks shared with spawn. Do not publish an effective
  * memory mode, build a runtime, create a KV directory, or stop the old child
  * until these checks accept the incoming model/configuration. File presence
@@ -3073,7 +3298,54 @@ static const char *native_launch_preflight(const engine_cfg *cfg, int mode,
                                            int dspark_enabled, char *err, size_t errsz) {
     if (!native_launch_mode_supported(mode, model_rel, remote, err, errsz))
         return "unsupported_model_mode";
+    const char *think_error = native_think_context_preflight(cfg, mode, model_rel, remote, err, errsz);
+    if (think_error) return think_error;
     if (!remote) {
+        if (model_file_is_deepseek41(model_rel)) {
+#ifndef __APPLE__
+            snprintf(err, errsz, "DeepSeek V4.1 currently requires macOS Metal");
+            return "unsupported_backend";
+#endif
+            if (cfg->power != 100) {
+                snprintf(err, errsz, "DeepSeek V4.1 does not implement GPU throttling; set Engine power to 100%%");
+                return "unsupported_power";
+            }
+            if (dspark_enabled) {
+                snprintf(err, errsz, "DeepSeek V4.1 does not support DSpark; turn DSpark off");
+                return "unsupported_speculation";
+            }
+            if (cfg->ctx > 1048576) {
+                snprintf(err, errsz, "DeepSeek V4.1 supports context up to 1048576 tokens");
+                return "unsupported_context";
+            }
+        }
+        const int qwen27 = model_file_is_qwen27(model_rel);
+        if (qwen27 != selected_checkout_is_q36()) {
+            snprintf(err, errsz, "Qwen27B requires its managed q36 engine; choose the matching model installation");
+            return "engine_model_mismatch";
+        }
+        if (qwen27) {
+            if (dspark_enabled) {
+                snprintf(err, errsz, "DSpark is not supported by the Qwen27B engine");
+                return "unsupported_speculation";
+            }
+#ifndef __APPLE__
+            snprintf(err, errsz, "The DStudio Qwen27B lifecycle currently requires macOS Metal");
+            return "unsupported_backend";
+#endif
+            if (cfg->ctx > 262144) {
+                snprintf(err, errsz, "This Qwen27B runtime supports context up to 262144 tokens; choose a supported context");
+                return "unsupported_context";
+            }
+            if (cfg->power != 100) {
+                snprintf(err, errsz, "Qwen27B does not implement GPU throttling; set Engine power to 100%%");
+                return "unsupported_power";
+            }
+            if (!file_present(MODEL_QWEN27_VISION)) {
+                snprintf(err, errsz, "Qwen27B needs its F16 projector; download both files in Settings > Models or run download-model.sh qwen27-q6");
+                return "model_component_missing";
+            }
+        }
         const int qwen35 = model_file_is_qwen35(model_rel);
         const int qwen38 = model_file_is_qwen38(model_rel);
 #ifndef __APPLE__
@@ -3868,7 +4140,13 @@ static void scan_lines(const char *data, size_t n, char *acc, size_t *acc_len, i
                     !(strstr(acc, "\"type\":\"status\"") &&
                       strstr(acc, "\"state\":\"prefill\"")))
                     snprintf(g_last_engine_line, sizeof g_last_engine_line, "%s", acc);
-                if (is_err && !g_child_stop_requested && strstr(acc, "+DWARFSTAR_WAITING")) {
+                if (is_err && !strcmp(acc, "+DSTUDIO_TURN_ERROR")) {
+                    if (g_active_turn_task) {
+                        task_mark_failed(g_active_turn_task, "native runtime reported a turn error", "see its transcript");
+                        g_active_turn_task = 0;
+                    }
+                } else if (is_err && !g_child_stop_requested && strstr(acc, "+DWARFSTAR_WAITING")) {
+                    model_rpc_cancel();
                     set_stage("Ready", 100);
                     g_ready = 1;
                     maybe_complete_launch_task(g_mode);
@@ -3934,88 +4212,144 @@ static void drain_child_stdout_plain(const char *data, size_t n) {
     scan_lines(data, n, g_line_out, &g_line_out_len, 0);
 }
 
-static void model_rpc_send_start_error(long id, const char *msg) {
-    if (g_in_fd < 0) return;
-    model_rpc_job job;
-    memset(&job, 0, sizeof job);
-    job.id = (int)id;
-    job.in_fd = g_in_fd;
-    model_rpc_write_frame(&job, "model_error", NULL, msg);
+/* The first-party runtime emits this exact header (rpc_send_request). Never
+ * discover a command by searching arbitrary nested JSON/document contents.
+ * 0 = need more, 1 = header complete, -1 = display event, -2 = broken command. */
+static int child_model_header(int *id) {
+    static const char type[] = "\x1e{\"type\":\"model_request\"";
+    static const char before_id[] = ",\"id\":";
+    static const char before_body[] = ",\"body\":";
+    const char *p = g_child_event_header;
+    size_t n = g_child_event_header_len, at = 0;
+    for (size_t i = 0; i < sizeof type - 1; i++, at++) {
+        if (at == n) return 0;
+        if (p[at] != type[i]) return -1;
+    }
+    for (size_t i = 0; i < sizeof before_id - 1; i++, at++) {
+        if (at == n) return 0;
+        if (p[at] != before_id[i]) return -2;
+    }
+    size_t first = at;
+    unsigned value = 0;
+    while (at < n && p[at] >= '0' && p[at] <= '9') {
+        unsigned digit = (unsigned)(p[at] - '0');
+        if (value > ((unsigned)INT_MAX - digit) / 10 || (at > first && p[first] == '0')) return -2;
+        value = value * 10 + digit; at++;
+    }
+    if (at == n) return 0;
+    if (at == first) return -2;
+    for (size_t i = 0; i < sizeof before_body - 1; i++, at++) {
+        if (at == n) return 0;
+        if (p[at] != before_body[i]) return -2;
+    }
+    *id = (int)value;
+    return at == n ? 1 : -2;
 }
 
-static int handle_child_event_line(const char *line) {
-    if (!line) return 0;
-    const char *p = line;
-    if ((unsigned char)p[0] == 0x1e) p++;
-    if (!strstr(p, "\"type\":\"model_request\"")) return 0;
+static void child_event_fail(const char *reason) {
+    if (g_active_turn_task) {
+        task_mark_failed(g_active_turn_task, reason, reason); g_active_turn_task = 0;
+    }
+    request_child_stop();
+    cstr_copy(g_engine_err, sizeof g_engine_err, reason);
+    g_child_event_active = CHILD_EVENT_DISCARD;
+}
 
-    long id = 0;
-    if (json_get_int(p, "id", 0, 2147483647L, &id) <= 0) return 1;
-    char *body = json_get_string_alloc_rpc(p, "body");
-    if (!body) {
-        model_rpc_send_start_error(id, "invalid internal model request");
-        return 1;
+static int child_display_append(const char *bytes, size_t count) {
+    /* Display records cannot exceed the transcript's existing 4 MiB capacity.
+     * Allocate its virtual capacity once; no growing-buffer copy on admission.
+     * An oversized event is an explicit runtime failure, not silent truncation. */
+    if (count > AGENT_BUF_CAP - g_child_event_line.len) {
+        child_event_fail("Runtime display event exceeds the 4 MiB transcript limit"); return 0;
     }
-    if (g_in_fd < 0 || !g_remote_base_url[0]) {
-        free(body);
-        model_rpc_send_start_error(id, "LAN model host is not configured");
-        return 1;
+    if (!g_child_event_line.ptr) {
+        g_child_event_line.ptr = malloc(AGENT_BUF_CAP + 1);
+        if (!g_child_event_line.ptr) { child_event_fail("Could not buffer the runtime display event"); return 0; }
+        g_child_event_line.cap = AGENT_BUF_CAP + 1;
     }
-    if (!model_rpc_start((int)id, body))
-        model_rpc_send_start_error(id, "failed to start internal LAN model request");
+    memcpy(g_child_event_line.ptr + g_child_event_line.len, bytes, count);
+    g_child_event_line.len += count; g_child_event_line.ptr[g_child_event_line.len] = '\0';
     return 1;
 }
 
 static void drain_child_event_finish(void) {
     if (!g_child_event_active) return;
-    if (g_child_event_line.ptr && g_child_event_line.len) {
+    if (g_child_event_active == CHILD_EVENT_MODEL) {
+        model_rpc_relay *j = model_rpc_input_owner(g_child_event_epoch);
+        if (j) model_rpc_relay_fail(j, "Runtime closed an incomplete model request envelope");
+    } else if (g_child_event_active == CHILD_EVENT_PREFIX) {
+        child_event_fail("Runtime closed an incomplete event header");
+    } else if (g_child_event_active == CHILD_EVENT_DISPLAY && g_child_event_line.len) {
         dtg_watchdog_observe_event_line(g_child_event_line.ptr);
-        if (!handle_child_event_line(g_child_event_line.ptr))
-            drain_child_stdout_plain(g_child_event_line.ptr, g_child_event_line.len);
+        drain_child_stdout_plain(g_child_event_line.ptr, g_child_event_line.len);
     }
     g_child_event_line.len = 0;
     if (g_child_event_line.ptr) g_child_event_line.ptr[0] = '\0';
     g_child_event_active = 0;
 }
 
-static void drain_child_stdout_data(const char *data, size_t n) {
-    size_t plain_start = 0;
-    for (size_t i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)data[i];
-        if (g_child_event_active) {
-            if (!json_dyn_putn(&g_child_event_line, data + i, 1)) {
-                g_child_event_active = 0;
-                g_child_event_line.len = 0;
-                if (g_child_event_line.ptr) g_child_event_line.ptr[0] = '\0';
-                plain_start = i + 1;
-                continue;
+static size_t drain_child_stdout_data(const char *data, size_t n) {
+    size_t used = 0;
+    while (used < n) {
+        if (!g_child_event_active) {
+            const char *rs = memchr(data + used, 0x1e, n - used);
+            size_t plain = rs ? (size_t)(rs - data) - used : n - used;
+            drain_child_stdout_plain(data + used, plain); used += plain;
+            if (!rs) break;
+            g_child_event_active = CHILD_EVENT_PREFIX;
+            g_child_event_header_len = 0; g_child_event_line.len = 0;
+            g_child_event_epoch = g_model_rpc_epoch;
+        }
+        if (g_child_event_active == CHILD_EVENT_PREFIX) {
+            if (g_child_event_header_len == sizeof g_child_event_header) {
+                child_event_fail("Runtime model request header exceeds its limit"); continue;
             }
-            if (c == '\n') {
-                drain_child_event_finish();
-                plain_start = i + 1;
+            g_child_event_header[g_child_event_header_len++] = data[used++];
+            int id = 0, status = child_model_header(&id);
+            if (status == -2) child_event_fail("Invalid runtime model request header");
+            else if (status == -1) {
+                g_child_event_active = CHILD_EVENT_DISPLAY;
+                child_display_append(g_child_event_header, g_child_event_header_len);
+            } else if (status == 1) {
+                g_child_event_active = CHILD_EVENT_DISCARD;
+                /* Also reject a header begun before Stop/WAITING: the request
+                 * identity is captured at RS, not when its last byte arrives. */
+                if (!g_interrupt_pending && !g_child_stop_requested && g_child_event_epoch == g_model_rpc_epoch) {
+                    if (!model_rpc_start(id, NULL, 1)) model_rpc_send_start_error(id, "Could not admit the internal model request for the selected engine");
+                    else { g_child_event_active = CHILD_EVENT_MODEL; g_child_event_epoch = g_model_rpc_epoch; }
+                }
             }
+            if (data[used - 1] == '\n') drain_child_event_finish();
             continue;
         }
-        if (c == 0x1e) {
-            if (i > plain_start) drain_child_stdout_plain(data + plain_start, i - plain_start);
-            g_child_event_active = 1;
-            g_child_event_line.len = 0;
-            if (g_child_event_line.ptr) g_child_event_line.ptr[0] = '\0';
-            json_dyn_putn(&g_child_event_line, data + i, 1);
-            plain_start = i + 1;
-        }
+        const char *end = memchr(data + used, '\n', n - used);
+        size_t count = end ? (size_t)(end - data) + 1 - used : n - used;
+        if (g_child_event_active == CHILD_EVENT_MODEL)
+            count = model_rpc_input_append(g_child_event_epoch, data + used, count);
+        else if (g_child_event_active == CHILD_EVENT_DISPLAY) child_display_append(data + used, count);
+        if (!count) break; /* owned upload staging is full; retain all unread bytes */
+        used += count;
+        if (data[used - 1] == '\n') drain_child_event_finish();
     }
-    if (!g_child_event_active && n > plain_start)
-        drain_child_stdout_plain(data + plain_start, n - plain_start);
+    return used;
+}
+
+static int child_stdout_can_drain(void) {
+    return g_child_event_active != CHILD_EVENT_MODEL || model_rpc_input_room(g_child_event_epoch) != 0;
+}
+
+static void child_input_reset(void) {
+    g_child_stdout_len = g_child_stdout_used = 0;
+    g_child_event_active = 0; g_child_event_header_len = 0;
+    g_child_event_line.len = 0;
+    if (g_child_event_line.ptr) g_child_event_line.ptr[0] = '\0';
 }
 
 static void agent_buf_reset(void) {
     g_alen = g_abase = 0;
     g_interrupt_pending = 0;
     g_line_out_len = g_line_err_len = 0;
-    g_child_event_active = 0;
-    g_child_event_line.len = 0;
-    if (g_child_event_line.ptr) g_child_event_line.ptr[0] = '\0';
+    child_input_reset();
 }
 
 static void sse_close_all(void);
@@ -4024,6 +4358,7 @@ static void close_pipes(void);
 /* ==================== process management ==================== */
 
 static void reap_child(void) {
+    model_download_progress_tick();
     if (g_dl_pid > 0) {
         int dst;
         if (waitpid(g_dl_pid, &dst, WNOHANG) == g_dl_pid) {
@@ -4035,6 +4370,7 @@ static void reap_child(void) {
                 g_active_download_task = 0;
             }
             g_dl_result = code == 0 ? 1 : -1;
+            if (g_dl_progress_fd >= 0) { close(g_dl_progress_fd); g_dl_progress_fd = -1; }
             g_dl_pid = -1;   /* keep g_dl_variant so status can report 100 / completion once */
         }
     }
@@ -4118,12 +4454,15 @@ static void reap_child(void) {
 }
 
 static void close_pipes(void) {
+    model_rpc_cancel();
+    child_input_reset();
     if (g_in_fd  >= 0) { close(g_in_fd);  g_in_fd  = -1; }
     if (g_out_fd >= 0) { close(g_out_fd); g_out_fd = -1; }
     if (g_err_fd >= 0) { close(g_err_fd); g_err_fd = -1; }
 }
 
 static void request_child_stop(void) {
+    model_rpc_cancel();
     sse_close_all();
     if (g_child <= 0) { g_mode = ENGINE_NONE; g_external_server = 0; return; }
     if (g_child_stop_requested) return;
@@ -4154,7 +4493,9 @@ static void request_child_stop(void) {
  * and let the owner reap/escalate it while continuing to serve control traffic. */
 static void stop_child(void) {
     request_child_stop();
+    q36_request_stop("DStudio shutdown");
     while (g_child > 0) { reap_child(); if (g_child > 0) usleep(10000); }
+    q36_shutdown();
 }
 
 /* Kills the EXTERNAL process holding a port (a ds4-server started outside the
@@ -4204,7 +4545,8 @@ static void child_setenv_metal(const engine_cfg *cfg) {
         unsetenv("DS4_Q35_DUMP");
         unsetenv("DS4_Q35_LOGITS");
     }
-    if (!model_is_laguna() && !model_is_qwen()) {
+    if (!model_is_laguna() && !model_is_qwen() &&
+        !model_file_is_deepseek41(current_model_rel())) {
         const int resident_flash = !g_ssd_streaming_effective &&
             model_is_flash() && flash_config_fits_metal(cfg, g_dspark_enabled, NULL, NULL);
         if (resident_flash) {
@@ -4528,6 +4870,9 @@ static int resolve_dspark_file(char *out, size_t outsz) {
 
 static int spawn_server_prepared(const engine_cfg *cfg, char *err, size_t errsz,
                                  launch_prepared *prepared) {
+    if (model_file_is_qwen27(current_model_rel()) || selected_checkout_is_q36()) {
+        snprintf(err, errsz, "Qwen27B must be started through DStudio's owned launch preparation"); return 0;
+    }
     if (native_launch_preflight(cfg, ENGINE_SERVER, current_model_rel(), 0,
                                 g_dspark_enabled, err, errsz)) return 0;
     engine_cfg native_cfg;
@@ -4670,10 +5015,14 @@ static int spawn_server(const engine_cfg *cfg, char *err, size_t errsz) {
  * avoidable tokens before it can accept the first message. Preserve the
  * selection as a small binding instruction instead; the first model turn then
  * loads the exact local pack through design_system()/skill(). */
-static char *build_skill_sys(int mode) {
+static char *build_skill_sys(int mode, int structured_tools) {
     if (!g_web_dir[0]) return NULL;
     const int design_mode = mode == ENGINE_DESIGN;
     const int cowork_mode = mode == ENGINE_COWORK;
+    /* The owned 27B Agent/Cowork adapter sends the complete signatures in
+     * request.tools. Keep operational instructions here, but do not advertise
+     * a second catalog inside system text. Never strip user-authored content;
+     * other native/DSML runtimes still need the inline declarations below. */
     char path[2300];
     char *buf = NULL; size_t len = 0, cap = 0;
 
@@ -4745,7 +5094,17 @@ static char *build_skill_sys(int mode) {
             "using the same native tool-call format as your other tools. You may call multiple `skill` tools "
             "in one turn when each pack covers a different concern, but default to one "
             "and cap each user request at three `skill` calls total; never load the same "
-            "skill twice:\n\n"
+            "skill twice:\n\n");
+        if (structured_tools)
+            o += (size_t)snprintf(cat + o, catcap - o,
+                "Use the provided function schemas for arguments. `skill` loads a user's "
+                "recipe; follow its checklist. `design_system` loads a brand pack; bind "
+                "its color, type, component and voice tokens. `pack_file` reads an "
+                "allowlisted file only after the pack lists it as available, for example "
+                "assets/template.html or references/checklist.md. `skills_search` returns "
+                "matching user skill ids and descriptions, best first.\n");
+        else
+            o += (size_t)snprintf(cat + o, catcap - o,
             "{\"type\":\"function\",\"function\":{\"name\":\"skill\",\"description\":\"Load one of the user's own skill recipes by id, then follow its checklist.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}}\n"
             "{\"type\":\"function\",\"function\":{\"name\":\"design_system\",\"description\":\"Load a brand pack (color tokens, type, components, voice) by id, then bind its tokens.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}}\n"
             "{\"type\":\"function\",\"function\":{\"name\":\"pack_file\",\"description\":\"Read an allowlisted pack file such as assets/template.html, references/checklist.md, references/layouts.md, or example.html after a pack lists available files.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}},\"required\":[\"type\",\"name\",\"path\"]}}}\n"
@@ -4770,18 +5129,34 @@ static char *build_skill_sys(int mode) {
                 "description or switch to DeepSeek Vision-Exp / GLM 5.3 with its native encoder.\n");
         }
         /* read_pdf and question are Agent-only tools. */
-        if (!design_mode)
+        if (!design_mode) {
             o += (size_t)snprintf(cat + o, catcap - o,
                 "\nPDF: to read a PDF file in the workspace call the `read_pdf` tool — pages with a "
                 "text layer come back verbatim; scanned/image-only pages are reported and skipped. "
                 "Results are cached, so re-reading the same file is "
                 "instant. A long document comes back truncated (the text notes where it stops): "
-                "call the tool again with pages (e.g. \"11-25\") to continue from there.\n"
+                "call the tool again with pages (e.g. \"11-25\") to continue from there.\n");
+            if (structured_tools)
+                o += (size_t)snprintf(cat + o, catcap - o,
+                    "Use a workspace path; pages accepts \"N\", \"N-M\" or \"N-\".\n");
+            else
+                o += (size_t)snprintf(cat + o, catcap - o,
                 "{\"type\":\"function\",\"function\":{\"name\":\"read_pdf\",\"description\":\"Read the text layer of a local PDF. Scanned/image-only pages are reported and skipped. Long PDFs are truncated at a page cap; pass pages to read a specific range.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the PDF file in the workspace.\"},\"pages\":{\"type\":\"string\",\"description\":\"Optional page range: \\\"N\\\" (one page), \\\"N-M\\\", or \\\"N-\\\" (from N to the end).\"}},\"required\":[\"path\"]}}}\n");
-        if (!design_mode)
+        }
+        if (!design_mode && structured_tools)
+            o += (size_t)snprintf(cat + o, catcap - o,
+                "Use `question` when the user needs to choose or clarify, then stop the "
+                "turn. Its questions argument is a JSON array string of question objects "
+                "such as {id,label,type,options}.\n");
+        if (!design_mode && !structured_tools)
             o += (size_t)snprintf(cat + o, catcap - o,
                 "{\"type\":\"function\",\"function\":{\"name\":\"question\",\"description\":\"Emit a structured question event for the UI. Use when you need the user to choose or clarify, then stop the turn.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"questions\":{\"type\":\"string\",\"description\":\"JSON array of question objects, e.g. [{id,label,type,options}].\"}},\"required\":[\"id\",\"title\",\"questions\"]}}}\n");
-        if (mode == ENGINE_AGENT)
+        if (mode == ENGINE_AGENT && structured_tools)
+            o += (size_t)snprintf(cat + o, catcap - o,
+                "Call `gsa_submit_phase` only when a DStudio GSA/RSA phase prompt explicitly "
+                "requests it. Submit the complete JSON phase payload through that tool, "
+                "then stop the turn; never print the payload as assistant prose.\n");
+        if (mode == ENGINE_AGENT && !structured_tools)
             o += (size_t)snprintf(cat + o, catcap - o,
                 "{\"type\":\"function\",\"function\":{\"name\":\"gsa_submit_phase\",\"description\":\"Submit one complete GSA or RSA phase as an authoritative structured event. Call only when a DStudio GSA/RSA phase prompt explicitly requests it, then stop the turn. Never print the payload as assistant prose.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"phase\":{\"type\":\"string\",\"enum\":[\"selection\",\"preflight\",\"validation\",\"inventory\",\"capture\",\"structure\",\"review\"]},\"payload\":{\"type\":\"string\",\"description\":\"One complete JSON object matching the requested phase contract.\"}},\"required\":[\"phase\",\"payload\"]}}}\n");
         if (design_mode)
@@ -5264,6 +5639,7 @@ static int run_build_jsonl_locked(const char *action) {
     char *cur = unified_read(src, &original_size);
     if (!cur) return 0;
     int patched = strstr(cur, JSONL_MARK) != NULL;
+    int qwen38_native = strstr(cur, "ds4_engine_is_qwen4(") != NULL;
     free(cur);
 
     if (patched)
@@ -5274,6 +5650,10 @@ static int run_build_jsonl_locked(const char *action) {
      * after upgrading DStudio, without a preceding Chat launch. */
     if (!run_ext_script("scripts/apply-ds4-glm53-m2max.sh", "apply") ||
         !run_ext_script("scripts/apply-ds4-vision-streaming.sh", "apply")) return 0;
+    if (qwen38_native &&
+        !run_ext_script("scripts/apply-ds4-qwen38-prepare.sh", "apply")) return 0;
+    if (qwen38_native &&
+        !run_ext_script("scripts/apply-ds4-qwen38-snapshot.sh", "apply")) return 0;
 
     int patch_version = jsonl_patch_version();
     if (patch_version <= 0) return 0;
@@ -5561,10 +5941,10 @@ static int run_ext_script(const char *script, const char *action) {
     return run_ext_script_for_dir(script, action, g_ds4_dir);
 }
 
-static char *build_piped_skill_sys(int runtime_mode) {
+static char *build_piped_skill_sys(int runtime_mode, int structured_tools) {
     const int cowork_mode = runtime_mode == ENGINE_COWORK;
-    if (runtime_mode == ENGINE_DESIGN) return build_skill_sys(runtime_mode);
-    char *skill_sys = build_skill_sys(runtime_mode);
+    if (runtime_mode == ENGINE_DESIGN) return build_skill_sys(runtime_mode, structured_tools);
+    char *skill_sys = build_skill_sys(runtime_mode, structured_tools);
     if (!cowork_mode) {
         /* Keep Claude-like discovery for direction-sensitive work without
          * slowing down straightforward code edits. This is injected via -sys;
@@ -5654,14 +6034,23 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
         native_cfg.power = 100;
         cfg = &native_cfg;
     }
+    const int owned_model = !g_remote_base_url[0] && model_file_is_qwen27(current_model_rel());
+    const int owned_vision = owned_model && q36_vision_ready();
+    const char *runtime_dir = prepared && prepared->runtime_dir ? prepared->runtime_dir : g_ds4_dir;
+    char owned_url[96] = "";
+    if (owned_model && (!prepared || !prepared->runtime_dir || !q36_endpoint(owned_url, sizeof owned_url))) {
+        snprintf(err, errsz, "Qwen27B requires its ready owned server and prepared DStudio tool runtime"); return 0;
+    }
+    const char *model_url = owned_model ? owned_url : g_remote_base_url;
+    const char *model_name = owned_model ? "qwen3.8-27b" : g_remote_model[0] ? g_remote_model : "ds4";
     steer_prepare();
     const char *runtime_label = cowork_mode ? "cowork" : "agent";
-    int remote_model = g_remote_base_url[0] != '\0';
+    int remote_model = owned_model || g_remote_base_url[0] != '\0';
     /* At this point any engine started by us has already been stopped
      * (api_start calls stop_child first). If the server port still responds,
      * there is an EXTERNAL ds4-server: ds4's instance-lock forbids two large
      * processes together, so we refuse with a clear message. */
-    if (!g_remote_base_url[0] && port_listening(ENGINE_DEFAULTS.port)) {
+    if (!remote_model && port_listening(ENGINE_DEFAULTS.port)) {
         snprintf(err, errsz,
                  "a ds4-server is running outside the launcher (port %d): close it before "
                  "switching to %s — the instance-lock forbids two large processes",
@@ -5696,14 +6085,14 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
 #else
     const char *agent_bin = cowork_mode ? "ds4-cowork" : "ds4-agent-jsonl";
 #endif
-    if (!file_present(agent_bin)) {
-        snprintf(err, errsz, "%.32s not found in %.150s — build ds4 first (make)", agent_bin, g_ds4_dir);
+    if (!file_present_in_dir(runtime_dir, agent_bin)) {
+        snprintf(err, errsz, "%.32s not found in %.150s — build ds4 first (make)", agent_bin, runtime_dir);
         return 0;
     }
     char ctxs[16], pows[16];
     snprintf(ctxs, sizeof ctxs, "%d", cfg->ctx);
     snprintf(pows, sizeof pows, "%d", cfg->power);
-    if (!cfg_ssd_streaming(cfg, remote_model, err, errsz)) return 0;
+    if (!cfg_ssd_streaming(cfg, remote_model && !owned_model, err, errsz)) return 0;
     char wd[1024];
     snprintf(wd, sizeof wd, "%s", (workdir && workdir[0]) ? workdir : (getenv("HOME") ? getenv("HOME") : "."));
 
@@ -5736,12 +6125,12 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
             }
         }
     }
-    if (!realpath(g_ds4_dir, ds4_abs)) {
-        snprintf(err, errsz, "ds4 dir not resolvable: %.200s", g_ds4_dir);
+    if (!realpath(runtime_dir, ds4_abs)) {
+        snprintf(err, errsz, "tool runtime dir not resolvable: %.200s", runtime_dir);
         return 0;
     }
 
-    char *skill_sys = prepared ? prepared->skill_sys : build_piped_skill_sys(runtime_mode);
+    char *skill_sys = prepared ? prepared->skill_sys : build_piped_skill_sys(runtime_mode, owned_model);
     if (prepared) prepared->skill_sys = NULL;
     char dspark_path[DSTUDIO_PATH_MAX];
     int dspark_on = 0;
@@ -5853,7 +6242,7 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
         return 0;
     }
     if (pid == 0) {
-        if (chdir(g_ds4_dir) != 0) _exit(127);   /* to find ./ds4-agent-jsonl */
+        if (chdir(runtime_dir) != 0) _exit(127); /* tool binary, not the inference checkout */
         if (!remote_model) {
             child_setenv_metal(cfg);
             child_setenv_metal_sources(ds4_abs); /* absolute: survive --chdir */
@@ -5861,6 +6250,12 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
         child_setenv_skills();                   /* on-demand skill()/design_system() packs */
         setenv("DS4UI_RUNTIME_NAME", runtime_label, 1);
         setenv("DS4UI_SSD_STREAMING_EFFECTIVE", g_ssd_streaming_effective ? "1" : "0", 1);
+        if (owned_model) setenv("DS4UI_REMOTE_TOOL_PROTOCOL", "openai", 1);
+        /* Capability belongs to the admitted, ready model/projector, not to
+         * inherited environment or a familiar model name in generated text. */
+        if (owned_vision)
+            setenv("DS4UI_REMOTE_VISION", "qwen27-openai", 1);
+        else unsetenv("DS4UI_REMOTE_VISION");
         dup2(ip[0], STDIN_FILENO);
         dup2(op[1], STDOUT_FILENO);
         dup2(ep[1], STDERR_FILENO);
@@ -5876,8 +6271,8 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
         argv[n++] = "--non-interactive";
         argv[n++] = "--jsonl";
         if (remote_model) {
-            argv[n++] = "--remote-base-url"; argv[n++] = g_remote_base_url;
-            argv[n++] = "--remote-model"; argv[n++] = g_remote_model[0] ? g_remote_model : "ds4";
+            argv[n++] = "--remote-base-url"; argv[n++] = (char *)model_url;
+            argv[n++] = "--remote-model"; argv[n++] = (char *)model_name;
         } else {
             argv[n++] = "--metal";
             if (g_ssd_streaming_effective) argv[n++] = "--ssd-streaming";
@@ -5909,6 +6304,7 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
     set_nonblock(g_out_fd); set_nonblock(g_err_fd);
 #endif
     g_child = pid; g_mode = runtime_mode; g_cfg = *cfg;
+    if (owned_model) q36_bind_frontend(pid);
     snprintf(g_workdir, sizeof g_workdir, "%s", wd);
     agent_buf_reset();
     reset_progress(cowork_mode ? "Starting Cowork…" : "Starting the agent…");
@@ -5918,7 +6314,7 @@ static int spawn_agent_prepared(const engine_cfg *cfg, const char *workdir,
     g_agent_session_working = 0;
     printf("engine: %s pid %d (chdir %s, %s, %s)\n", runtime_label, (int)pid, wd,
            cfg->uncensored ? "uncensored" : "standard",
-           remote_model ? "jsonl/remote-model" : "jsonl");
+           owned_model ? "jsonl/owned-local-model" : remote_model ? "jsonl/remote-model" : "jsonl");
     return 1;
 }
 
@@ -5979,7 +6375,7 @@ static int spawn_design_prepared(const engine_cfg *cfg, const char *workdir,
     /* Design receives only compact active-pack bindings here. The complete
      * DESIGN.md/SKILL.md bodies are loaded by native tools on the first turn,
      * so startup does not prefill the whole catalog or selected pack. */
-    char *skill_sys = prepared ? prepared->skill_sys : build_piped_skill_sys(ENGINE_DESIGN);
+    char *skill_sys = prepared ? prepared->skill_sys : build_piped_skill_sys(ENGINE_DESIGN, 0);
     if (prepared) prepared->skill_sys = NULL;
 
     char dspark_path[DSTUDIO_PATH_MAX];
@@ -6132,27 +6528,44 @@ static int spawn_design_prepared(const engine_cfg *cfg, const char *workdir,
     return 1;
 }
 
-/* Reads whatever is available from the child's pipes (non-blocking). */
+/* A continuously ready child must not monopolize control/SSE. Both pipes have
+ * independent per-pass budgets; an upload blocked on its helper also retains
+ * the exact unread stdout suffix and continues to drain stderr/control. */
 static void drain_child(void) {
+    model_rpc_tick();
     if (g_out_fd < 0 && g_err_fd < 0) return;
     char buf[8192];
     if (g_out_fd >= 0) {
-        for (;;) {
-            ssize_t n = read(g_out_fd, buf, sizeof buf);
+        size_t budget = CHILD_PIPE_PASS_BYTES;
+        while (budget && child_stdout_can_drain()) {
+            if (g_child_stdout_used < g_child_stdout_len) {
+                size_t count = g_child_stdout_len - g_child_stdout_used;
+                if (count > budget) count = budget;
+                size_t consumed = drain_child_stdout_data(g_child_stdout_pending + g_child_stdout_used, count);
+                g_child_stdout_used += consumed; budget -= consumed;
+                if (g_child_stdout_used < g_child_stdout_len) break;
+                g_child_stdout_used = g_child_stdout_len = 0;
+                continue;
+            }
+            size_t count = sizeof g_child_stdout_pending;
+            if (count > budget) count = budget;
+            ssize_t n = read(g_out_fd, g_child_stdout_pending, count);
             if (n > 0) {
-                drain_child_stdout_data(buf, (size_t)n);
+                g_child_stdout_len = (size_t)n;
             } else if (n == 0) { drain_child_event_finish(); break; }
             else { break; } /* EAGAIN or error: retry on the next pass */
-            if (n < (ssize_t)sizeof buf) break;
         }
     }
     if (g_err_fd >= 0) {
-        for (;;) {
-            ssize_t n = read(g_err_fd, buf, sizeof buf);
+        size_t budget = CHILD_PIPE_PASS_BYTES;
+        while (budget) {
+            size_t count = sizeof buf;
+            if (count > budget) count = budget;
+            ssize_t n = read(g_err_fd, buf, count);
             if (n > 0) {
                 scan_lines(buf, (size_t)n, g_line_err, &g_line_err_len, 1);
+                budget -= (size_t)n;
             } else break;
-            if (n < (ssize_t)sizeof buf) break;
         }
     }
     /* Server readiness: besides the log, confirm via the listening port. */
@@ -6187,13 +6600,14 @@ static void api_model_download(int fd, const char *body) {
 
     /* Whitelist of download_model.sh targets (the different quantizations). */
     static const char *TARGETS[] = {
+        "ds41f-q2", "ds41f-q4", "ds41f-vision",
         "ds4f-q2", "ds4f-q2-q4", "ds4f-q4", "ds4f-mxfp4",
         "ds4f-dspark", "flash-dspark",
         "ds4f-vision-q2", "ds4f-vision-q2-q4", "ds4f-vision-mxfp4",
         "ds4f-vision-encoder", "ds4f-vision-dspark",
         "pro-q2-imatrix", "pro-q4-layers00-30", "pro-q4-layers31-output", "pro-q4-split",
         "glm53-q2", "glm53-vision",
-        "laguna-q4", "qwen38-q4k", "qwen36-q6",
+        "laguna-q4", "qwen38-q4k", "qwen36-q6", "qwen27-q6",
     };
     int valid = 0;
     for (size_t i = 0; i < sizeof TARGETS / sizeof TARGETS[0]; i++)
@@ -6221,8 +6635,70 @@ static void api_model_download(int fd, const char *body) {
         send_json(fd, "500 Internal Server Error", out);
         return;
     }
+    const int q27 = !strcmp(target, "qwen27-q6");
+    char install_root[DSTUDIO_PATH_MAX] = "";
+    char store_identity[64] = "", log_path[128] = "/tmp/ds4-model-dl.log";
+    int owned_log = -1;
+    int progress[2] = {-1, -1};
+    if (q27) {
+        /* Capture the managed root once. Downloading a different model must
+         * not select its checkout, stop the current engine or overwrite the
+         * user's model preference. All expensive install/hash work is below,
+         * in the isolated child, never on this HTTP control path. */
+        cstr_copy(install_root, sizeof install_root, ds4_abs);
+        char *slash = strrchr(install_root, '/');
+        if (slash) *slash = '\0';
+        int n = snprintf(ds4_abs, sizeof ds4_abs, "%s/ds4", install_root);
+        if (!install_root[0] || n < 0 || (size_t)n >= sizeof ds4_abs || !ds4_dir_valid_path(ds4_abs)) {
+            task_mark_failed(task_id, "managed model store unavailable", "Qwen27B needs the managed ds4 installation root");
+            send_json(fd, "409 Conflict", "{\"ok\":false,\"error\":\"Qwen27B needs the managed ds4 model store; finish first-run setup\"}");
+            return;
+        }
+        char store[DSTUDIO_PATH_MAX + 16]; struct stat st;
+        snprintf(store, sizeof store, "%s/gguf", ds4_abs);
+        if (stat(store, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            task_mark_failed(task_id, "managed model store unavailable", "Finish first-run setup before downloading Qwen27B");
+            send_json(fd, "409 Conflict", "{\"ok\":false,\"error\":\"The managed model folder is missing; finish first-run setup\"}");
+            return;
+        }
+        snprintf(store_identity, sizeof store_identity, "%llu:%llu", (unsigned long long)st.st_dev, (unsigned long long)st.st_ino);
+        if (pipe(progress) != 0 || fcntl(progress[0], F_SETFL, O_NONBLOCK) != 0 ||
+            fcntl(progress[0], F_SETFD, FD_CLOEXEC) != 0) {
+            if (progress[0] >= 0) close(progress[0]);
+            if (progress[1] >= 0) close(progress[1]);
+            task_mark_failed(task_id, "could not create download progress pipe", strerror(errno));
+            send_json(fd, "500 Internal Server Error", "{\"ok\":false,\"error\":\"Could not prepare the model download\"}");
+            return;
+        }
+        cstr_copy(log_path, sizeof log_path, "/tmp/dstudio-qwen27-download.XXXXXX");
+        owned_log = mkstemp(log_path);
+        if (owned_log < 0) {
+            close(progress[0]); close(progress[1]);
+            task_mark_failed(task_id, "could not create private download log", strerror(errno));
+            send_json(fd, "500 Internal Server Error", "{\"ok\":false,\"error\":\"Could not prepare a private download log\"}");
+            return;
+        }
+        fcntl(owned_log, F_SETFD, FD_CLOEXEC);
+    }
+    /* This child performs installer work before exec. Block termination across
+     * fork so it cannot run the inherited host handler and signal the active
+     * chat model. Stop belongs to this download process group only. */
+    sigset_t previous_signals, download_signals;
+    if (q27) {
+        sigemptyset(&download_signals); sigaddset(&download_signals, SIGTERM); sigaddset(&download_signals, SIGINT);
+        if (sigprocmask(SIG_BLOCK, &download_signals, &previous_signals) != 0) {
+            close(progress[0]); close(progress[1]); close(owned_log);
+            task_mark_failed(task_id, "could not isolate download signals", strerror(errno));
+            send_json(fd, "500 Internal Server Error", "{\"ok\":false,\"error\":\"Could not isolate the model download\"}");
+            return;
+        }
+    }
     pid_t pid = fork();
+    if (q27 && pid != 0) sigprocmask(SIG_SETMASK, &previous_signals, NULL);
     if (pid < 0) {
+        if (progress[0] >= 0) close(progress[0]);
+        if (progress[1] >= 0) close(progress[1]);
+        if (owned_log >= 0) close(owned_log);
         task_mark_failed(task_id, "fork failed", strerror(errno));
         char out[160];
         snprintf(out, sizeof out, "{\"ok\":false,\"taskId\":%llu,\"error\":\"fork failed\"}", task_id);
@@ -6230,11 +6706,41 @@ static void api_model_download(int fd, const char *body) {
         return;
     }
     if (pid == 0) {
+        if (q27) {
+            if (signal(SIGTERM, SIG_DFL) == SIG_ERR || signal(SIGINT, SIG_DFL) == SIG_ERR) _exit(127);
+            sigprocmask(SIG_SETMASK, &previous_signals, NULL);
+        }
         setpgid(0, 0);
         if (chdir(ds4_abs) != 0) _exit(127);
-        int log = open("/tmp/ds4-model-dl.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int log = q27 ? owned_log : open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (log >= 0) { dup2(log, STDOUT_FILENO); dup2(log, STDERR_FILENO); close(log); }
         int dn = open("/dev/null", O_RDONLY); if (dn >= 0) { dup2(dn, STDIN_FILENO); close(dn); }
+        if (q27) {
+            if (dup2(progress[1], 3) < 0) _exit(127);
+            /* Retain no host sockets, model leases, SSE clients or unrelated
+             * files across this worker/installer. Keep only its phase pipe. */
+            DIR *open_fds = opendir("/dev/fd");
+            if (!open_fds) _exit(127);
+            struct dirent *entry;
+            while ((entry = readdir(open_fds))) {
+                char *end; long child_fd = strtol(entry->d_name, &end, 10);
+                if (!*end && child_fd >= 4 && child_fd != dirfd(open_fds) && child_fd <= INT_MAX) close((int)child_fd);
+            }
+            closedir(open_fds);
+            fcntl(3, F_SETFD, FD_CLOEXEC);
+            char installed[DSTUDIO_PATH_MAX], error[8600] = ""; int downloaded = 0;
+            if (!setup_install_engine("q36", install_root, installed, sizeof installed,
+                                      &downloaded, error, sizeof error)) {
+                fprintf(stderr, "%s\n", error); _exit(1);
+            }
+            char helper[DSTUDIO_PATH_MAX + 64], store[DSTUDIO_PATH_MAX + 16];
+            snprintf(helper, sizeof helper, "%s/scripts/download-qwen27.py", g_web_dir);
+            snprintf(store, sizeof store, "%s/gguf", ds4_abs);
+            fcntl(3, F_SETFD, 0); /* explicitly passed to this one downloader */
+            execlp("python3", "python3", helper, "--directory", store,
+                   "--directory-identity", store_identity, "--progress-fd", "3", (char *)NULL);
+            _exit(127);
+        }
         if (abliterated) _exit(child_download_abliterated_resumable(ds4_abs));
         if (!strcmp(target, "qwen38-q4k") || !strcmp(target, "qwen36-q6")) {
             char helper[DSTUDIO_PATH_MAX + 64];
@@ -6249,7 +6755,11 @@ static void api_model_download(int fd, const char *body) {
         _exit(127);
     }
     setpgid(pid, pid);
+    if (owned_log >= 0) close(owned_log);
+    if (progress[1] >= 0) close(progress[1]);
     g_dl_pid = pid;
+    g_dl_progress_fd = progress[0]; g_dl_phase = q27 ? 'I' : 'D'; g_dl_stop_requested = 0;
+    cstr_copy(g_dl_directory, sizeof g_dl_directory, ds4_abs);
     g_dl_result = 0;
     g_active_download_task = task_id;
     dstudio_task *t = task_find(task_id);
@@ -6258,7 +6768,7 @@ static void api_model_download(int fd, const char *body) {
     cstr_copy(g_dl_variant, sizeof g_dl_variant, abliterated ? "flash" : target);
     model_download_details(abliterated ? "flash-abliterated" : target,
                            g_dl_rel, sizeof g_dl_rel, &g_dl_expected_bytes);
-    printf("model: downloading %s (pid %d) — log /tmp/ds4-model-dl.log\n", abliterated ? "abliterated" : target, (int)pid);
+    printf("model: downloading %s (pid %d) — log %s\n", abliterated ? "abliterated" : target, (int)pid, log_path);
     char out[128];
     snprintf(out, sizeof out, "{\"ok\":true,\"taskId\":%llu,\"target\":\"%s\"}", task_id, abliterated ? "flash" : target);
     send_json(fd, "200 OK", out);
@@ -6282,6 +6792,7 @@ static void api_model_download_stop(int fd) {
                   "{\"ok\":false,\"error\":\"could not stop the model download\"}");
         return;
     }
+    g_dl_stop_requested = 1;
     send_json(fd, "200 OK", "{\"ok\":true,\"stopped\":true}");
 #endif
 }
@@ -6295,7 +6806,7 @@ static void api_model_folder_open(int fd, const char *body) {
     char engine[24] = "";
     json_get_string(body, "engine", engine, sizeof engine);
     char checkout[DSTUDIO_PATH_MAX];
-    if (!engine[0] || !strcmp(engine, "main") || !strcmp(engine, "laguna") || !strcmp(engine, "qwen") || !strcmp(engine, "qwen35")) {
+    if (!engine[0] || !strcmp(engine, "main") || !strcmp(engine, "laguna") || !strcmp(engine, "qwen") || !strcmp(engine, "qwen35") || !strcmp(engine, "q36")) {
         /* The native app's web directory is Application Support, while the
          * selected engine checkout can live anywhere. Every managed engine's
          * gguf entry points at the shared physical store, so resolve it from
@@ -6305,6 +6816,19 @@ static void api_model_folder_open(int fd, const char *body) {
         send_json(fd, "400 Bad Request",
                   "{\"ok\":false,\"error\":\"unknown model engine folder\"}");
         return;
+    }
+    char download_target[48] = "";
+    json_get_string(body, "downloadTarget", download_target, sizeof download_target);
+    if (download_target[0]) {
+        if (!strcmp(download_target, g_dl_variant) && g_dl_directory[0]) {
+            cstr_copy(checkout, sizeof checkout, g_dl_directory);
+        } else {
+            char paused[48] = "";
+            if (!paused_model_download(paused, sizeof paused, NULL, NULL) || strcmp(paused, download_target)) {
+                send_json(fd, "409 Conflict", "{\"ok\":false,\"error\":\"That download is no longer current; refresh its status\"}");
+                return;
+            }
+        }
     }
     struct stat st;
     if (stat(checkout, &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -6356,6 +6880,12 @@ static void api_model_partials_delete(int fd, const char *body) {
     if (!json_get_bool(body, "confirm")) {
         send_json(fd, "400 Bad Request",
                   "{\"ok\":false,\"error\":\"explicit partial deletion confirmation is required\"}");
+        return;
+    }
+    if (!strcmp(target, "qwen27-q6") || model_download_is_ds41(target)) {
+        /* Its private, flock-owned staging tree is not the legacy .part
+         * layout. Keep it resumable; never delete around its active leader. */
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"error\":\"Partial files are preserved; this cleanup does not support this model's locked download cache\"}");
         return;
     }
     char target_rel[1100];
@@ -6410,11 +6940,13 @@ static int spawn_design(const engine_cfg *cfg, const char *workdir, char *err, s
     return spawn_design_prepared(cfg, workdir, err, errsz, NULL);
 }
 
+#include "dstudio_q36.c"
 #include "dstudio_launch.c"
 
 static void api_status(int fd) {
     reap_child();
-    int engine_running = g_child > 0;
+    q36_tick();
+    int engine_running = g_child > 0 || q36_running();
     if (!engine_running && g_mode == ENGINE_SERVER && g_external_server) {
         int port_open = port_listening(g_cfg.port);
         engine_running = port_open;
@@ -6483,8 +7015,11 @@ static void api_status(int fd) {
         }
     }
     int native_vision_active = engine_running && !g_external_server &&
-        native_selected_vision_encoder() != NULL &&
-        (g_mode == ENGINE_SERVER || g_mode == ENGINE_AGENT || g_mode == ENGINE_COWORK);
+        (q36_running() ? q36_vision_ready() &&
+         (g_mode == ENGINE_SERVER || q36_rpc_current(g_q36.pid, g_q36.launch_task)) :
+         native_selected_vision_encoder() != NULL &&
+         (g_mode == ENGINE_SERVER || g_mode == ENGINE_AGENT || g_mode == ENGINE_COWORK));
+    const engine_cfg *effective = q36_running() && !MODE_IS_PIPED(g_mode) ? &g_q36.spec.cfg : &g_cfg;
     char stage_esc[192];
     json_escape_into(stage_esc, sizeof stage_esc, g_stage, strlen(g_stage));
     char wd_esc[1100];
@@ -6499,13 +7034,14 @@ static void api_status(int fd) {
                  "{\"model\":\"%s\",\"port\":%d,\"ctx\":%d,\"power\":%d,\"think\":\"%s\",\"designThinkTokens\":%d,"
                  "\"ssdStreaming\":\"%s\",\"ssdStreamingEffective\":%s,\"ssdStreamingReason\":\"%s\","
                  "\"metalHotlistSeed\":%s,\"dspark\":%s}",
-                 g_cfg.uncensored ? "uncensored" : "standard", g_cfg.port, g_cfg.ctx, g_cfg.power,
-                 g_cfg.think == 0 ? "off" : g_cfg.think == 2 ? "max" : "high",
-                 g_cfg.design_think_tokens,
-                 g_cfg.ssd_streaming == SSD_STREAMING_ON ? "on" : g_cfg.ssd_streaming == SSD_STREAMING_OFF ? "off" : "auto",
-                 g_ssd_streaming_effective ? "true" : "false", ssd_reason_esc,
-                 g_metal_hotlist_seed ? "true" : "false",
-                 g_dspark_enabled ? "true" : "false");
+                 effective->uncensored ? "uncensored" : "standard", effective->port, effective->ctx, effective->power,
+                 effective->think == 0 ? "off" : effective->think == 2 ? "max" : "high",
+                 effective->design_think_tokens,
+                 effective->ssd_streaming == SSD_STREAMING_ON ? "on" : effective->ssd_streaming == SSD_STREAMING_OFF ? "off" : "auto",
+                 !q36_running() && g_ssd_streaming_effective ? "true" : "false",
+                 q36_running() ? "Qwen27B dense weights in RAM; disk KV is separate" : ssd_reason_esc,
+                 !q36_running() && g_metal_hotlist_seed ? "true" : "false",
+                 !q36_running() && g_dspark_enabled ? "true" : "false");
     else
         snprintf(cfg, sizeof cfg, "null");
 
@@ -6536,11 +7072,13 @@ static void api_status(int fd) {
     }
 
     char d4_esc[2100], web_esc[2100], err_esc[600], line_esc[600], mf_esc[1100];
-    json_escape_into(d4_esc, sizeof d4_esc, g_ds4_dir, strlen(g_ds4_dir));
+    const char *effective_dir = q36_running() ? g_q36.spec.directory : g_ds4_dir;
+    const char *effective_model = q36_running() ? g_q36.spec.model : current_model_rel();
+    json_escape_into(d4_esc, sizeof d4_esc, effective_dir, strlen(effective_dir));
     json_escape_into(web_esc, sizeof web_esc, g_web_dir, strlen(g_web_dir));
     json_escape_into(err_esc, sizeof err_esc, g_engine_err, strlen(g_engine_err));
     json_escape_into(line_esc, sizeof line_esc, g_last_engine_line, strlen(g_last_engine_line));
-    json_escape_into(mf_esc, sizeof mf_esc, current_model_rel(), strlen(current_model_rel()));
+    json_escape_into(mf_esc, sizeof mf_esc, effective_model, strlen(effective_model));
 
     char lan_addr[80];
     int lan_on = lan_status(lan_addr, sizeof lan_addr);
@@ -6554,15 +7092,15 @@ static void api_status(int fd) {
         "\"models\":{\"standard\":%s,\"uncensored\":%s},"
         "\"variants\":{\"flash\":%s,\"pro\":%s},\"variant\":\"%s\","
         "\"download\":%s,\"downloadVariant\":\"%s\",\"downloadPct\":%lld,"
-        "\"downloadBytes\":%lld,\"downloadExpectedBytes\":%lld,"
+        "\"downloadBytes\":%lld,\"downloadExpectedBytes\":%lld,\"downloadPhase\":\"%s\","
         "\"pausedDownload\":%s,\"pausedDownloadVariant\":\"%s\","
         "\"pausedDownloadBytes\":%lld,\"pausedDownloadExpectedBytes\":%lld,\"pausedDownloadPct\":%lld,"
         "\"engineError\":\"%s\",\"engineLine\":\"%s\",\"modelFile\":\"%s\",\"skill\":\"%s\",\"designSystem\":\"%s\","
         "\"glmVisionInstalled\":%s,\"deepseekVisionInstalled\":%s,"
         "\"nativeVisionActive\":%s,\"glmVisionActive\":%s,\"deepseekVisionActive\":%s,"
         "\"launchTaskId\":%llu,\"launchPhase\":\"%s\",\"launchRequestId\":\"%s\","
-        "\"contentOk\":%s,\"contentDownloading\":%s}",
-        mode_name(g_mode), engine_running ? "true" : "false", g_ready ? "true" : "false",
+        "\"contentOk\":%s,\"contentDownloading\":%s,\"residentPid\":%d,\"residentStopping\":%s}",
+        mode_name(q36_running() && !MODE_IS_PIPED(g_mode) ? ENGINE_SERVER : g_mode), engine_running ? "true" : "false", g_ready ? "true" : "false",
         g_load_pct, stage_esc, g_agent_working ? "true" : "false",
         g_agent_session_working ? "true" : "false", agent_disk_checkpoints_supported() ? "true" : "false", wd_esc, cfg,
         d4_esc, ds4_dir_valid() ? "true" : "false", web_esc, web_dir_valid() ? "true" : "false",
@@ -6570,18 +7108,19 @@ static void api_status(int fd) {
         model_present(0) ? "true" : "false", model_present(1) ? "true" : "false",
         file_present(MODEL_FLASH) ? "true" : "false", file_present(MODEL_PRO) ? "true" : "false",
         g_variant, g_dl_variant[0] ? "true" : "false", g_dl_variant, dl_pct,
-        dl_bytes, g_dl_expected_bytes,
+        dl_bytes, g_dl_expected_bytes, model_download_phase(),
         paused ? "true" : "false", paused_variant, paused_bytes, paused_expected, paused_pct,
         err_esc, line_esc, mf_esc, g_skill, g_design_system,
         native_glm_vision_installed() ? "true" : "false",
         native_deepseek_vision_installed() ? "true" : "false",
         native_vision_active ? "true" : "false",
-        (native_vision_active && model_is_glm()) ? "true" : "false",
-        (native_vision_active && model_is_deepseek_vision()) ? "true" : "false",
+        (native_vision_active && model_file_is_glm(effective_model)) ? "true" : "false",
+        (native_vision_active && model_file_is_deepseek_vision(effective_model)) ? "true" : "false",
         g_launch ? g_launch->task_id : 0,
-        !g_launch ? "" : g_launch->canceled ? "canceling" : g_launch->stopping ? "stopping" : "preparing",
+        !g_launch ? "" : g_launch->canceled ? "canceling" : g_launch->q36_started ? "loading" : g_launch->stopping ? "stopping" : "preparing",
         g_launch ? g_launch->request.request_id : "",
-        content_present() ? "true" : "false", "false");
+        content_present() ? "true" : "false", "false", q36_running() ? (int)g_q36.pid : 0,
+        q36_running() && g_q36.stopping ? "true" : "false");
     send_json(fd, "200 OK", body);
 }
 
@@ -6661,7 +7200,7 @@ static void api_doctor(int fd) {
     if (!content_ok) warn++;
     ok = ok && doctor_add_check(&b, &first, "content", "DStudio original systems",
         content_ok ? "ok" : "warn",
-        content_ok ? "Five original design systems included offline. No catalog download."
+        content_ok ? "Original design systems included offline. No catalog download."
                    : "The bundled design catalog is incomplete. Rebuild or reinstall DStudio; no external catalog will be downloaded.",
         content_ok ? NULL : "setup-content");
 
@@ -6798,7 +7337,7 @@ static int collect_engine_checkouts(
      * be backed by a file provider, where opendir() can block the single local
      * HTTP loop indefinitely. Managed runtimes have fixed sibling names; an
      * arbitrary user-selected checkout is already included as `active`. */
-    const char *managed_names[] = { "ds4", DS4_LAGUNA_DIR_NAME, DS4_QWEN_DIR_NAME, DS4_QWEN35_DIR_NAME };
+    const char *managed_names[] = { "ds4", DS4_LAGUNA_DIR_NAME, DS4_QWEN_DIR_NAME, DS4_QWEN35_DIR_NAME, Q36_DIR_NAME };
     for (size_t ni = 0; ni < sizeof managed_names / sizeof managed_names[0] && ndirs < cap; ni++) {
         char full[DSTUDIO_PATH_MAX + 64], abs[DSTUDIO_PATH_MAX];
         int n = snprintf(full, sizeof full, "%s/%s", parent, managed_names[ni]);
@@ -6814,6 +7353,10 @@ static int collect_engine_checkouts(
 static void git_branch_of(const char *dir, char *out, size_t outsz);
 
 static void checkout_branch_label(const char *dir, char *out, size_t outsz) {
+    const char *base = strrchr(dir, '/');
+    if (!strcmp(base ? base + 1 : dir, Q36_DIR_NAME)) {
+        cstr_copy(out, outsz, "qwen27b"); return;
+    }
     git_branch_of(dir, out, outsz);
     if (out[0]) return;
     const char *name = strrchr(dir, '/');
@@ -6868,6 +7411,7 @@ static char *gguf_catalog_build(void) {
         if (legacy_glm_engine) continue;
         int qwen_engine = !strcmp(engine_name, DS4_QWEN_DIR_NAME) || !strcmp(branch, "qwen3.8-flash-next");
         int qwen35_engine = !strcmp(engine_name, DS4_QWEN35_DIR_NAME) || !strcmp(branch, "qwen35moe-support");
+        int qwen27_engine = !strcmp(engine_name, Q36_DIR_NAME);
         for (int di = 0; di < 2 && ok; di++) {
             char dir[DSTUDIO_PATH_MAX + 16];
             snprintf(dir, sizeof dir, "%s%s%s", dirs[ci],
@@ -6881,7 +7425,9 @@ static char *gguf_catalog_build(void) {
                 if (len < 6 || strcmp(nm + len - 5, ".gguf")) continue;
                 if (!model_file_is_supported(nm) && !model_file_is_auxiliary(nm)) continue;
                 int laguna_model = mem_contains_ci(nm, len, "laguna");
-                if (mem_contains_ci(nm, len, "qwen3.8") != qwen_engine) continue;
+                int qwen27_model = mem_contains_ci(nm, len, "qwen3.8-27b");
+                if (qwen27_model != qwen27_engine) continue;
+                if ((mem_contains_ci(nm, len, "qwen3.8") && !qwen27_model) != qwen_engine) continue;
                 if (model_file_is_qwen35(nm) != qwen35_engine) continue;
                 if (laguna_model != laguna_engine) continue;
                 if (laguna_engine && !laguna_model) continue;
@@ -6919,6 +7465,7 @@ static char *gguf_catalog_build(void) {
 static char *gguf_catalog_build_known(void) {
     static const char *known[] = {
         MODEL_STD,
+        MODEL_DS41_Q2, MODEL_DS41_Q4, MODEL_DS41_VISION,
         MODEL_UNC,
         "gguf/DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf",
         "gguf/DeepSeek-V4-Flash-MXFP4Experts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-mxfp4-0731.gguf",
@@ -6936,6 +7483,7 @@ static char *gguf_catalog_build_known(void) {
         MODEL_LAGUNA,
         MODEL_QWEN, MODEL_QWEN_PLE,
         MODEL_QWEN35,
+        MODEL_QWEN27, MODEL_QWEN27_VISION,
     };
     char dirs[ENGINE_CHECKOUT_CAP][DSTUDIO_PATH_MAX];
     char active[DSTUDIO_PATH_MAX];
@@ -6968,7 +7516,10 @@ static char *gguf_catalog_build_known(void) {
                                mem_contains_ci(rel, strlen(rel), "laguna");
             int qwen_engine = !strcmp(engine_name, DS4_QWEN_DIR_NAME) || !strcmp(branch, "qwen3.8-flash-next");
             int qwen35_engine = !strcmp(engine_name, DS4_QWEN35_DIR_NAME) || !strcmp(branch, "qwen35moe-support");
-            if (mem_contains_ci(rel, strlen(rel), "qwen3.8") != qwen_engine) continue;
+            int qwen27_engine = !strcmp(engine_name, Q36_DIR_NAME);
+            int qwen27_model = mem_contains_ci(rel, strlen(rel), "qwen3.8-27b");
+            if (qwen27_model != qwen27_engine) continue;
+            if ((mem_contains_ci(rel, strlen(rel), "qwen3.8") && !qwen27_model) != qwen_engine) continue;
             if (model_file_is_qwen35(rel) != qwen35_engine) continue;
             if (laguna_model != laguna_engine) continue;
             char full[DSTUDIO_PATH_MAX + 512];
@@ -7199,7 +7750,8 @@ static void api_engine_checkouts(int fd) {
         char branch[128];
         checkout_branch_label(dirs[i], branch, sizeof branch);
         int has_server = file_present_in_dir(dirs[i], "ds4-server") ||
-                         file_present_in_dir(dirs[i], "ds4-server.exe");
+                         file_present_in_dir(dirs[i], "ds4-server.exe") ||
+                         (!strcmp(name, Q36_DIR_NAME) && file_present_in_dir(dirs[i], "q36-server"));
         ok = ok && json_dyn_puts(&b, i ? ",{\"dir\":" : "{\"dir\":") &&
              json_dyn_put_escaped(&b, dirs[i]) &&
              json_dyn_puts(&b, ",\"name\":") && json_dyn_put_escaped(&b, name) &&
@@ -7235,7 +7787,9 @@ static void api_engine_checkout_set(int fd, const char *body) {
 #ifndef _WIN32
     /* Keep upstream pristine in Git: DStudio owns this behavior as a reversible
      * patch and applies it as soon as a checkout is selected. */
-    if (!run_ext_script_for_dir("scripts/apply-ds4-visible-downloads.sh", "apply", abs)) {
+    const char *checkout_name = strrchr(abs, '/');
+    const int q36 = !strcmp(checkout_name ? checkout_name + 1 : abs, Q36_DIR_NAME);
+    if (!q36 && !run_ext_script_for_dir("scripts/apply-ds4-visible-downloads.sh", "apply", abs)) {
         send_json(fd, "409 Conflict",
                   "{\"ok\":false,\"error\":\"could not apply the DStudio download patch; the checkout may not match supported upstream sources\"}");
         return;
@@ -7426,12 +7980,14 @@ oom:
 /* Task Graph is a common host service, not a UI mode.  The core is included
  * before GSA/RSA so all structured pipelines share its strict JSON grammar. */
 #include "dstudio_task_graph.c"
+#include "dstudio_model_stream.c"
 #include "dstudio_task_store.c"
 #include "dstudio_task_policy.c"
 #include "dstudio_task_executor.c"
 #include "dstudio_task_scheduler.c"
 #include "dstudio_task_api.c"
 #include "dstudio_steering.c"
+#include "dstudio_goal.c"
 /* GSA implementation lives with the extension assets. It is included here so
  * DStudio still builds as one C translation unit while keeping GSA ownership
  * under extension/gsa/. */
@@ -7659,6 +8215,21 @@ static void api_start(int fd, const char *body) {
     unsigned long long dspark_required = 0, metal_budget = 0;
     const int remote_engine = remote.base_url[0] && (want_agent || want_cowork || want_design);
     const char *selected_model = model_override[0] ? model_override : variant_rel(variant);
+    if (!remote_engine && q36_ready() && !strcmp(g_q36.spec.directory, g_ds4_dir) &&
+        !strcmp(g_q36.spec.model, selected_model)) {
+        /* Mode changes reuse an owned server. The UI does not specify its
+         * private endpoint/cache settings; omission must not reset those to
+         * defaults and unload valid weights. Explicit values still win, and
+         * the normal preparation identity checks still decide actual reuse. */
+        long value;
+        if (!json_get_int(body, "port", 1024, 65535, &value)) cfg.port = g_q36.spec.cfg.port;
+        if (!json_get_int(body, "kvSpaceMb", 256, 262144, &value)) cfg.kv_space_mb = g_q36.spec.cfg.kv_space_mb;
+        if (!json_get_int(body, "kvMinTokens", 1, 100000, &value)) cfg.kv_min_tok = g_q36.spec.cfg.kv_min_tok;
+    }
+    if (!remote_engine && model_file_is_qwen27(selected_model) && json_get_bool(body, "metalHotlistSeed")) {
+        send_json(fd, "409 Conflict", "{\"ok\":false,\"code\":\"unsupported_hotlist\",\"error\":\"Qwen27B is a dense model and has no expert hotlist\"}");
+        return;
+    }
     if (!normalize_flash_memory_request(&cfg, remote_engine, selected_model, &dspark_enabled, allow_over_budget_dspark,
                                        config_note, sizeof config_note,
                                        &dspark_required, &metal_budget)) {
@@ -7710,6 +8281,10 @@ static void api_start(int fd, const char *body) {
 
 static void launch_commit(launch_job *j) {
     const launch_request *r = &j->request;
+    if (j->q36 && !q36_same_launch(j->q36)) {
+        task_mark_failed(j->task_id, "Qwen readiness changed before publication", "owned runtime mismatch");
+        launch_result_error(j, "launch_stale", "The owned Qwen runtime is no longer ready"); return;
+    }
     const int fd = j->client, requested_mode = r->mode, force = r->force;
     const int want_agent = r->mode == ENGINE_AGENT, want_cowork = r->mode == ENGINE_COWORK;
     const int want_design = r->mode == ENGINE_DESIGN, remote_engine = r->remote.base_url[0] != 0;
@@ -7729,6 +8304,30 @@ static void launch_commit(launch_job *j) {
     g_metal_hotlist_seed = r->hotlist;
     unsigned long long task_id = j->task_id;
 
+    if (j->q36) {
+        /* A privately authenticated, dependency-matched readiness receipt is
+         * required before this publication. Never use DS4's foreign-port or
+         * instance-lock attach path for the separately owned Qwen server. */
+        g_cfg = cfg; g_q36.spec.cfg = cfg; g_mode = ENGINE_SERVER;
+        g_external_server = 0; g_external_wait_started_ms = 0;
+        g_workdir[0] = '\0'; g_engine_err[0] = '\0'; g_last_engine_line[0] = '\0';
+        g_ssd_streaming_effective = 0;
+        cstr_copy(g_ssd_streaming_reason, sizeof g_ssd_streaming_reason,
+            "Qwen27B keeps its dense weights in RAM; disk KV is a separate setting");
+        g_ready = 1; set_stage("Qwen27B ready", 100);
+        q36_bind_frontend(0);
+        if (requested_mode == ENGINE_SERVER) {
+            dstudio_task *task = task_find(task_id);
+            if (task) task->pid = (int)g_q36.pid;
+            task_mark_completed(task_id, j->q36_started ? "Owned Qwen engine is ready" : "Reusing the same owned Qwen model");
+            char out[256];
+            snprintf(out, sizeof out, "{\"ok\":true,\"taskId\":%llu,\"mode\":\"server\",\"ctx\":%d,\"residentPid\":%d,\"reused\":%s}",
+                task_id, cfg.ctx, (int)g_q36.pid, j->q36_started ? "false" : "true");
+            send_json(fd, "200 OK", out);
+            return;
+        }
+    }
+
     /* After stopping our own child, anything still on the engine port is an
      * EXTERNAL ds4-server (started outside the launcher). The instance-lock
      * forbids two large processes, so we cannot start agent/design (and a
@@ -7737,7 +8336,7 @@ static void launch_commit(launch_job *j) {
      * port first. REMOTE agent/design never touch the local engine or its
      * lock (spawn_agent/spawn_design already skip their own port checks when
      * remote) — blocking them on an unrelated local server was a bug. */
-    if (!remote_engine && port_listening(ENGINE_DEFAULTS.port)) {
+    if (!remote_engine && !j->q36 && port_listening(ENGINE_DEFAULTS.port)) {
         if (requested_mode == ENGINE_SERVER && ds4_server_compatible(ENGINE_DEFAULTS.port)) {
             reuse_external_ds4(&cfg, 1, 0);
             dstudio_task *t = task_find(task_id);
@@ -7772,7 +8371,7 @@ static void launch_commit(launch_job *j) {
         g_external_server = 0;
     }
 
-    if (requested_mode == ENGINE_SERVER && !port_listening(cfg.port)) {
+    if (!j->q36 && requested_mode == ENGINE_SERVER && !port_listening(cfg.port)) {
         pid_t owner = ds4_instance_lock_owner();
         if (owner != 0) {
             reuse_external_ds4(&cfg, 0, owner);
@@ -7812,21 +8411,24 @@ static void launch_commit(launch_job *j) {
     json_escape_into(note_esc, sizeof note_esc, config_note, strlen(config_note));
     snprintf(out, sizeof out,
              "{\"ok\":true,\"taskId\":%llu,\"mode\":\"%s\",\"ctx\":%d,\"dspark\":%s,"
-             "\"adjusted\":%s,\"warning\":\"%s\"}",
+             "\"adjusted\":%s,\"warning\":\"%s\",\"residentPid\":%d,\"reused\":%s}",
              task_id, mode_name(g_mode), cfg.ctx, g_dspark_enabled ? "true" : "false",
-             config_adjusted ? "true" : "false", note_esc);
+             config_adjusted ? "true" : "false", note_esc,
+             j->q36 ? (int)g_q36.pid : 0, j->q36 && !j->q36_started ? "true" : "false");
     send_json(fd, "200 OK", out);
 }
 
 static void api_stop(int fd) {
     reap_child();
+    q36_tick();
     int pending = launch_preparation_busy();
     if (pending) launch_cancel("Engine launch stopped by the user");
-    if (g_child <= 0 && !pending) {
+    if (g_child <= 0 && !q36_running() && !pending) {
         send_json(fd, "409 Conflict", "{\"ok\":false,\"error\":\"no engine started by DStudio\"}");
         return;
     }
     request_child_stop();
+    q36_request_stop("Stopped by the user");
     send_json(fd, "200 OK", "{\"ok\":true,\"stopping\":true}");
 }
 
@@ -7877,8 +8479,27 @@ static int display_prompt_is_guided_analysis(const char *display) {
     return 0;
 }
 
+static const char *agent_turn_think_preflight(int force_think_max, char *err, size_t errsz) {
+    engine_cfg candidate = g_cfg;
+    if (force_think_max) candidate.think = 2;
+    return native_think_context_preflight(&candidate, g_mode, current_model_rel(),
+                                          g_remote_base_url[0] != '\0', err, errsz);
+}
+
+/* Both native and graph turns use the same pipe control before the prompt.
+ * Callers revalidate first, before admitting a turn or changing settings. */
+static int agent_write_turn(const char *prompt, int force_think_max) {
+    static const char think_max_frame[] =
+        "\x1e" "{\"type\":\"control\",\"name\":\"think\",\"value\":\"max\"}\n";
+    if ((force_think_max && !fd_write_all(g_in_fd, think_max_frame, sizeof think_max_frame - 1)) ||
+        !fd_write_all(g_in_fd, prompt, strlen(prompt)) || !fd_write_all(g_in_fd, "\n", 1))
+        return 0;
+    if (force_think_max) g_cfg.think = 2;
+    return 1;
+}
+
 static int dtg_agent_submit_for_graph(const char *title, const char *prompt,
-                                      const char *display_prompt,
+                                      const char *display_prompt, int force_think_max,
                                       unsigned long long *task_id,
                                       size_t *transcript_from,
                                       char *err, size_t errsz) {
@@ -7891,11 +8512,13 @@ static int dtg_agent_submit_for_graph(const char *title, const char *prompt,
     if (g_interrupt_pending || g_agent_working || g_agent_session_working) {
         snprintf(err, errsz, "Agent runtime is busy"); return 0;
     }
+    /* A queued/recovered graph may now target a different runtime context.
+     * Revalidate its original request on every attempt, not just HTTP create. */
+    if (agent_turn_think_preflight(force_think_max, err, errsz)) return 0;
     unsigned long long operation = task_begin("task-graph-agent",
         title && title[0] ? title : "Task Graph Agent turn", "task-graph",
         ENGINE_AGENT, g_workdir, (int)g_child, 1);
-    size_t len = strlen(prompt);
-    if (!fd_write_all(g_in_fd, prompt, len) || !fd_write_all(g_in_fd, "\n", 1)) {
+    if (!agent_write_turn(prompt, force_think_max)) {
         snprintf(err, errsz, "write to Agent failed: %s", strerror(errno));
         task_mark_failed(operation, "write to Agent failed", err);
         return 0;
@@ -7928,7 +8551,6 @@ static void api_agent_send(int fd, const char *body) {
     }
     char orchestration[32] = "auto";
     (void)json_get_string(body, "orchestration", orchestration, sizeof orchestration);
-    size_t len = strlen(prompt);
     size_t display_len = strlen(display);
     const char *kind = task_kind_for_mode(g_mode);
     const char *target = mode_name(g_mode);
@@ -7971,6 +8593,24 @@ static void api_agent_send(int fd, const char *body) {
         api_agent_send_state_error(fd, "409 Conflict", "a Task Graph owns the Agent turn lease", 0);
         return;
     }
+    int force_think_max = g_mode == ENGINE_AGENT && display_prompt_is_guided_analysis(display);
+    if (g_mode == ENGINE_AGENT && !strcmp(orchestration, "goal")) {
+        char objective[DTG_GOAL_MAX];
+        if (json_get_string(body, "goalObjective", objective, sizeof objective) &&
+            display_prompt_is_guided_analysis(objective)) force_think_max = 1;
+    }
+    char think_error[256] = "";
+    const char *think_code = agent_turn_think_preflight(force_think_max, think_error, sizeof think_error);
+    if (think_code) {
+        char escaped[768], out[1024];
+        json_escape_into(escaped, sizeof escaped, think_error, strlen(think_error));
+        snprintf(out, sizeof out, "{\"ok\":false,\"taskId\":0,\"code\":\"%s\",\"error\":\"%s\"}", think_code, escaped);
+        send_json(fd, "409 Conflict", out); return;
+    }
+    if (!strcmp(orchestration, "goal")) {
+        if (g_mode != ENGINE_AGENT) { dtg_api_error(fd,"409 Conflict","Goals require Agent mode"); return; }
+        api_goal_send(fd, body, prompt, display); return;
+    }
     if (g_mode == ENGINE_AGENT && strcmp(orchestration, "native") &&
         !dtg_text_contains_ci(prompt, "PLAN MODE")) {
         const char *route_reason = NULL;
@@ -7993,18 +8633,13 @@ static void api_agent_send(int fd, const char *body) {
     unsigned long long task_id = task_begin(kind, turn_title,
                                             target, g_mode, g_workdir, (int)g_child, 1);
     size_t from = g_alen;
-    int force_gsa_think_max = g_mode == ENGINE_AGENT && display_prompt_is_guided_analysis(display);
-    static const char gsa_think_max_frame[] =
-        "\x1e" "{\"type\":\"control\",\"name\":\"think\",\"value\":\"max\"}\n";
     /* send on the agent's stdin + newline as turn terminator */
-    if ((force_gsa_think_max && !fd_write_all(g_in_fd, gsa_think_max_frame, sizeof gsa_think_max_frame - 1)) ||
-        !fd_write_all(g_in_fd, prompt, len) || !fd_write_all(g_in_fd, "\n", 1)) {
+    if (!agent_write_turn(prompt, force_think_max)) {
         snprintf(g_engine_err, sizeof g_engine_err, "write to agent/design failed: %s", strerror(errno));
         task_mark_failed(task_id, "write to agent/design failed", g_engine_err);
         api_agent_send_state_error(fd, "500 Internal Server Error", "write to agent/design failed", task_id);
         return;
     }
-    if (force_gsa_think_max) g_cfg.think = 2;
     /* Echo of the prompt into the transcript, marked, so the UI shows it right
      * away. The literals are SPLIT because \x is greedy on hex: "\x01E" would be
      * read as 0x1E. "\x01" "USER" keeps 0x01 separate from 'U'/'E'. */
@@ -8068,24 +8703,7 @@ static void api_agent_interrupt(int fd, const char *body) {
         send_json(fd, "200 OK", out);
         return;
     }
-#ifdef _WIN32
-    /* The MSYS/Cygwin agent does not receive console CTRL_C/CTRL_BREAK
-     * reliably when its std streams are pipes; the JSONL protocol handles an
-     * explicit interrupt control frame on stdin instead. */
-    if (g_in_fd >= 0) {
-        static const char frame[] = "\x1e{\"type\":\"control\",\"name\":\"interrupt\"}\n";
-        fd_write_all(g_in_fd, frame, sizeof(frame) - 1);
-    }
-#else
-    /* Remote Design is blocked reading model frames from this same pipe. Wake
-     * it with the protocol control frame as well as SIGINT; the signal latches
-     * cancellation while the frame makes the blocking read return promptly. */
-    if (g_mode == ENGINE_DESIGN && g_remote_base_url[0] && g_in_fd >= 0) {
-        static const char frame[] = "\x1e{\"type\":\"control\",\"name\":\"interrupt\"}\n";
-        fd_write_all(g_in_fd, frame, sizeof(frame) - 1);
-    }
-    kill(g_child, SIGINT);
-#endif
+    interrupt_piped_runtime();
     g_interrupt_pending = 1;
     unsigned long long task_id = g_active_turn_task;
     const char *applied_status = "canceled";
@@ -10426,14 +11044,26 @@ static int connect_loopback_with_retry(int port, int attempts, int delay_ms) {
 static void api_v1_proxy(int client_fd, const char *method, const char *path,
                          const char *req, size_t got, size_t header_len, size_t clen) {
     int cors = !client_is_loopback(client_fd);
+    const int owned_qwen = q36_running() || selected_checkout_is_q36() || model_file_is_qwen27(current_model_rel());
+    if (owned_qwen) {
+        q36_tick();
+        if (!q36_ready() || !g_ready) {
+            send_json(client_fd, "503 Service Unavailable", "{\"error\":{\"message\":\"The owned Qwen model is not ready\",\"code\":\"model_not_ready\"}}");
+            return;
+        }
+    }
     int eport = (g_mode == ENGINE_SERVER) ? g_cfg.port : ENGINE_DEFAULTS.port;
+    if (owned_qwen) eport = g_q36.spec.cfg.port;
     const char *eport_env = getenv("DS4UI_ENGINE_PORT");  /* override the engine port */
-    if (eport_env && eport_env[0]) { int p = atoi(eport_env); if (p > 0 && p < 65536) eport = p; }
+    if (!owned_qwen && eport_env && eport_env[0]) { int p = atoi(eport_env); if (p > 0 && p < 65536) eport = p; }
     /* ds4 is a single local inference engine. Immediately after a long response
      * its accept loop can be momentarily unavailable; one failed connect must
      * not turn that normal handoff into a false "engine is not running" error. */
-    int efd = connect_loopback_with_retry(eport, 25, 100);
-    if (efd < 0) {
+    /* q36 has a separate responsive HTTP acceptor; connect in the relay, never
+     * sleep/retry on the interactive owner. Its endpoint cannot be redirected
+     * by the legacy DS4 port override. */
+    int efd = owned_qwen ? -1 : connect_loopback_with_retry(eport, 25, 100);
+    if (efd < 0 && !owned_qwen) {
         dstudio_log_event("error", "proxy", 0, "/v1 proxy could not connect to local engine port %d", eport);
         const char *body = "{\"error\":{\"message\":\"the local ds4 engine is not running\"}}";
         if (cors) {
@@ -10479,6 +11109,13 @@ static void api_v1_proxy(int client_fd, const char *method, const char *path,
         if (g_out_fd >= 0) close(g_out_fd);
         if (g_err_fd >= 0) close(g_err_fd);
         if (g_in_fd  >= 0) close(g_in_fd);
+        if (owned_qwen) {
+            efd = connect_loopback_with_retry(eport, 1, 0);
+            if (efd < 0) {
+                send_json(client_fd, "503 Service Unavailable", "{\"error\":{\"message\":\"The owned Qwen endpoint disconnected\",\"code\":\"model_disconnected\"}}");
+                close(client_fd); _exit(1);
+            }
+        }
         struct timeval tv = { 600, 0 };
         (void)setsockopt(efd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         (void)setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
@@ -11069,6 +11706,8 @@ int main(int argc, char **argv)
     { ssize_t n = readlink("/proc/self/exe", g_launch_executable, sizeof g_launch_executable - 1);
       if (n > 0) g_launch_executable[n] = '\0'; else g_launch_executable[0] = '\0'; }
 #endif
+    if (argc > 1 && !strcmp(argv[1], "--engine-pins")) return setup_engine_pins_cli(argc);
+    if (argc > 1 && !strcmp(argv[1], "--model-rpc-worker")) return model_rpc_worker_cli(argc);
     if (argc > 1 && !strcmp(argv[1], "--prepare-launch")) return launch_prepare_cli(argc, argv);
     /* Batch mode: apply the jsonl patch and build ds4-agent-jsonl, then
      * exit. To test the patch without starting engine/HTTP: ./dstudio --build-jsonl [ds4-dir] */
@@ -11139,7 +11778,7 @@ int main(int argc, char **argv)
 #ifndef _WIN32
     /* Existing persisted selections also receive newly shipped reversible
      * patches after an app update, without waiting for another folder pick. */
-    if (!test_mode && ds4_dir_valid_path(g_ds4_dir) &&
+    if (!test_mode && !selected_checkout_is_q36() && ds4_dir_valid_path(g_ds4_dir) &&
         !run_ext_script("scripts/apply-ds4-visible-downloads.sh", "apply")) {
         fprintf(stderr, "engine: visible-download patch failed for %s\n", g_ds4_dir);
     }
@@ -11176,9 +11815,10 @@ int main(int argc, char **argv)
 
     store_load();   /* host-local browser history; LAN clients do not reach this store */
 
-    /* Crash-clean: if a previous launch died with the ds4_agent.c source
-     * still patched, restore it from the .bak before anything else. */
-    if (!test_mode) run_build_jsonl("restore");
+    /* Diagnose unverified legacy Agent edits without overwriting their backup.
+     * q36 owns inference only: its separate ds4 tool frontend is prepared by
+     * the launch worker, so this checkout has no ds4_agent.c to recover. */
+    if (!test_mode && !selected_checkout_is_q36()) run_build_jsonl("restore");
 
     /* Startup is network-free for visual content. */
     if (!content_present())
@@ -11224,28 +11864,41 @@ int main(int argc, char **argv)
 
     while (!g_stop) {
         reap_child();
+        q36_tick();
+        drain_child(); /* also consumes a retained stdout suffix after upload pressure */
         launch_preparation_tick();
 #ifndef _WIN32
         gguf_responders_reap();
 #endif
         gsa_tools_install_reap();
         dtg_scheduler_tick(dstudio_now_ms());
-        struct pollfd pfd[3];
+        struct pollfd pfd[9];
         int nf = 0;
         pfd[nf].fd = g_srv_fd; pfd[nf].events = POLLIN; nf++;  /* rebindable: the LAN toggle swaps this */
         int oi = -1, ei = -1;
-        if (g_out_fd >= 0) { oi = nf; pfd[nf].fd = g_out_fd; pfd[nf].events = POLLIN; nf++; }
+        if (g_out_fd >= 0 && child_stdout_can_drain()) { oi = nf; pfd[nf].fd = g_out_fd; pfd[nf].events = POLLIN; nf++; }
         if (g_err_fd >= 0) { ei = nf; pfd[nf].fd = g_err_fd; pfd[nf].events = POLLIN; nf++; }
 
-        int prc = poll(pfd, (nfds_t)nf, 200);
+        nf += model_rpc_pollfds(pfd + nf);
+        nf += q36_pollfds(pfd + nf);
+        /* Reaping a canceled helper must not delay the next admitted request.
+         * Windows anonymous pipes have no writable poll event in this host;
+         * their nonblocking writes are retried with a bounded active cadence. */
+        int poll_ms = g_model_rpc && g_model_rpc->stopping ? 10 : 200;
+#ifdef _WIN32
+        if (g_model_rpc) poll_ms = 10;
+#endif
+        int prc = poll(pfd, (nfds_t)nf, poll_ms);
         if (prc < 0) { if (errno == EINTR) continue; perror("poll"); continue; }
+        q36_tick(); /* revoke a dead model's lease before publishing RPC bytes */
+        model_rpc_tick();
 
         if ((oi >= 0 && (pfd[oi].revents & (POLLIN | POLLHUP))) ||
             (ei >= 0 && (pfd[ei].revents & (POLLIN | POLLHUP))))
             drain_child();
 
         /* server readiness via port even without traffic on the pipes */
-        if (g_mode == ENGINE_SERVER && !g_child_stop_requested && !g_ready && port_listening(g_cfg.port)) {
+        if (g_mode == ENGINE_SERVER && !q36_running() && !g_child_stop_requested && !g_ready && port_listening(g_cfg.port)) {
             set_stage("Ready", 100); g_ready = 1; maybe_complete_launch_task(ENGINE_SERVER);
         }
 
@@ -11261,6 +11914,7 @@ int main(int argc, char **argv)
     }
     sse_close_all();
     diag_sse_close_all();
+    model_rpc_shutdown();
     launch_preparation_shutdown();
     image_runtime_shutdown();
     video_runtime_shutdown();

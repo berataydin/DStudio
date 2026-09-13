@@ -26,6 +26,10 @@ typedef void (*dstudio_remote_chunk_cb)(void *ud,
                                         const char *text,
                                         size_t len);
 
+/* Called by the stream owner, never by a signal handler. Inspect the runtime's
+ * existing cancellation latch; do not perform I/O or mutate its transcript. */
+typedef int (*dstudio_remote_cancel_cb)(void *ud);
+
 void dstudio_remote_buf_free(dstudio_remote_buf *b);
 void dstudio_remote_buf_append(dstudio_remote_buf *b, const char *s, size_t n);
 void dstudio_remote_buf_puts(dstudio_remote_buf *b, const char *s);
@@ -47,7 +51,25 @@ int dstudio_remote_chat_stream(const char *base_url,
                                int max_tokens,
                                dstudio_remote_chunk_cb cb,
                                void *ud,
+                               dstudio_remote_cancel_cb cancelled,
                                char *err,
                                size_t err_len);
+
+/* Explicit structured Chat Completions boundary. The schemas and transcript
+ * are serialized by the owning runtime; tool_calls_json receives one complete
+ * JSON array only after a successful terminal frame. Caller frees it. Failure,
+ * interruption and transport EOF leave it NULL. No tool executes in transport.
+ * Legacy DSML callers keep the function above and reject structured calls. */
+int dstudio_remote_chat_stream_tools(const char *base_url,
+                                     const char *model,
+                                     const char *messages_json,
+                                     const char *tools_json,
+                                     int think_level,
+                                     float temperature, float top_p, float min_p,
+                                     int max_tokens,
+                                     dstudio_remote_chunk_cb cb, void *ud,
+                                     dstudio_remote_cancel_cb cancelled,
+                                     char **tool_calls_json,
+                                     char *err, size_t err_len);
 
 #endif

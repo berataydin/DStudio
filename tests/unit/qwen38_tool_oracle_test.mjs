@@ -73,6 +73,12 @@ const good = [['read_document','tasks.json'],['list','.'],['read','tasks.json'],
   ['write_document','dispatch.md'],['read_document','dispatch.md'],['read','tasks.json']];
 assert.equal(verifyQwen38ToolTrace('cowork',events(good),'dispatch.md').toolCalls,6);
 assert.equal(verifyQwen38ToolTrace('agent',events([['read','tasks.json'],['write','ready.json'],['read','ready.json']]),'ready.json').toolCalls,3);
+const agentListing = [['list','.'],['read','tasks.json'],['write','ready.json'],['read','ready.json']];
+assert.equal(verifyQwen38ToolTrace('agent',events(agentListing),'ready.json').toolCalls,4);
+for (const extra of [['list','..'], ['list','/'], ['read','unrelated.txt'],
+  ['write','tasks.json'], ['bash','.'], ['visit_page','.']])
+  assert.throws(() => verifyQwen38ToolTrace('agent',events([...agentListing,extra]),'ready.json'));
+assert.throws(() => verifyQwen38ToolTrace('agent',events(agentListing).slice(0,-2),'ready.json'));
 for (const bad of [
   good.filter(([name])=>name!=='read_document'),
   good.filter(([name])=>name!=='write_document'),

@@ -123,6 +123,16 @@ try {
       fs.appendFileSync(binary,'# corrupted after build\n');const result=invoke({},'design-status');pass(result);assert.match(result.stdout,/needs rebuild/);
       const n=count();pass(invoke());assert.equal(count(),n+1);
     });
+    await test('shared remote Unicode header invalidates the private Design build by bytes',()=>{
+      pass(invoke()); const n=count(), file=path.join(assets,'extension/remote/dstudio_wire_string.h');
+      const bytes=fs.readFileSync(file), stat=fs.statSync(file);
+      try {
+        fs.appendFileSync(file,'\n/* isolated transport-header revision */\n');
+        fs.utimesSync(file,stat.atime,stat.mtime);
+        pass(invoke()); assert.equal(count(),n+1);
+        pass(invoke()); assert.equal(count(),n+1);
+      } finally {fs.writeFileSync(file,bytes);}
+    });
     await test('compiler configuration and untracked GPU/header inputs invalidate freshness',()=>{
       const n=count();pass(invoke({CFLAGS:'-O1 -DDS4_NO_GPU'}));assert.equal(count(),n+1);
       pass(invoke({CFLAGS:'-O1 -DDS4_NO_GPU'}));assert.equal(count(),n+1);
@@ -228,6 +238,6 @@ try {
   }
 } finally {
   for(const pid of groups){try{process.kill(-pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}}
-  report.status=report.cases.length===(legacy?1:17)&&report.cases.every(row=>row.status==='PASS')?'PASS':'FAIL';
+  report.status=report.cases.length===(legacy?1:18)&&report.cases.every(row=>row.status==='PASS')?'PASS':'FAIL';
   writeArtifact(run,'results.json',report);console.log(`Preserved Design build evidence: ${run}`);process.exitCode=report.status==='PASS'?0:1;
 }

@@ -22,6 +22,9 @@ static pthread_mutex_t gate_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_cv = PTHREAD_COND_INITIALIZER;
 static int entered, released, command_returned, create_fail, sync_fail;
 static int live_sessions, peak_sessions, save_failure, late_cancel;
+#ifdef DSTUDIO_RESET_QWEN38
+static int prepare_calls;
+#endif
 static pthread_t prepare_thread;
 static void probe_interrupt(void *ud);
 
@@ -85,6 +88,14 @@ static int probe_sync(ds4_session *s, const ds4_tokens *t, char *err, size_t cap
     if (sync_fail) { snprintf(err, cap, "injected prefill failure"); return 1; }
     return 0;
 }
+#ifdef DSTUDIO_RESET_QWEN38
+static int probe_prepare(ds4_session *s, const ds4_tokens *t, char *err, size_t cap) {
+    assert(s->tokens.len == 0 && s->value != 707);
+    prepare_calls++;
+    return probe_sync(s, t, err, cap);
+}
+#define ds4_session_prepare_empty probe_prepare
+#endif
 #ifdef DSTUDIO_RESET_QWEN38
 static int probe_quant(ds4_engine *e) { (void)e; return 4; }
 static int probe_model(ds4_engine *e) { (void)e; return 1; }
@@ -218,12 +229,16 @@ int main(int argc, char **argv) {
 #endif
     pthread_mutex_unlock(&w.mu);
     worker_stop(&w); pthread_join(w.thread, NULL);
+    int api_ok = 1;
+#ifdef DSTUDIO_RESET_QWEN38
+    api_ok = prepare_calls == ((allocation || save_failure) ? 0 : 1);
+#endif
     const int passed = owner_ok && unchanged_during && control_returned && progress_seen && idle &&
-        final_ok && peak_sessions <= 2 && live_sessions == 1;
+        final_ok && peak_sessions <= 2 && live_sessions == 1 && api_ok;
     printf("{\"case\":\"%s\",\"passed\":%s,\"ownerOnly\":%d,\"unchangedDuring\":%d,"
         "\"controlReturned\":%d,\"progressBeforeRelease\":%d,\"idle\":%d,\"finalState\":%d,"
-        "\"peakSessions\":%d,\"workerBytes\":%zu}\n", argv[1], passed ? "true":"false",
-        owner_ok, unchanged_during, control_returned, progress_seen, idle, final_ok, peak_sessions, sizeof(w));
+        "\"peakSessions\":%d,\"workerBytes\":%zu,\"preparationApi\":%d}\n", argv[1], passed ? "true":"false",
+        owner_ok, unchanged_during, control_returned, progress_seen, idle, final_ok, peak_sessions, sizeof(w), api_ok);
     probe_free(w.session); assert(live_sessions == 0);
     ds4_tokens_free(&w.transcript); free(w.session_title); free(w.out); free(w.cache_dir);
 #ifdef DSTUDIO_RESET_QWEN38

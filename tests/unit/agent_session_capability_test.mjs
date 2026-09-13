@@ -81,14 +81,16 @@ for (const mode of ['agent', 'cowork']) {
 }
 const menus = ['selectedAgentDiskCheckpointsExpected', 'slashCommands']
   .map(name => extractFunction(source, name)).join('\n');
-for (const mode of ['agent', 'cowork']) for (const [qwen35, remote, lan, expected] of [
-  [true, false, false, false], [false, false, false, true],
-  [true, true, false, true], [true, false, true, true],
+const selectors = source.slice(source.indexOf('    const localQwen35Selected ='), source.indexOf('    function thinkingProfile('));
+for (const mode of ['agent', 'cowork']) for (const [model, remote, lan, expected] of [
+  ['qwen3.6-35b-a3b', false, false, false], ['deepseek-v4-flash', false, false, true],
+  ['qwen3.6-35b-a3b', true, false, true], ['qwen3.6-35b-a3b', false, true, true],
+  ['qwen3.8-27b', false, false, false], ['qwen3.8-27b', true, false, true], ['qwen3.8-27b', false, true, true],
 ]) {
-  const settings = {chatBackend: remote ? 'deepseek' : 'local', deepseekApiKey: remote ? 'fixture' : ''};
+  const settings = {model, chatBackend: remote ? 'deepseek' : 'local', deepseekApiKey: remote ? 'fixture' : ''};
   const context = vm.createContext({Store: {getSettings: () => settings}, Switcher: {mode: () => mode},
-    localQwen35Selected: () => qwen35, isLanClientMode: () => lan});
-  const commands = vm.runInContext(menus + '\nslashCommands()', context).map(c => c.cmd.trim());
+    isLanClientMode: () => lan});
+  const commands = vm.runInContext(selectors + menus + '\nslashCommands()', context).map(c => c.cmd.trim());
   for (const command of ['/save', '/list', '/switch', '/del']) assert.equal(commands.includes(command), expected);
   for (const command of ['/new', '/compact', '/help']) assert(commands.includes(command));
   count++;

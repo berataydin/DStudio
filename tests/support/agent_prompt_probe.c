@@ -16,6 +16,10 @@ static void emit_prompt(const char *id, char *prompt) {
 int main(void) {
     for (int cowork = 0; cowork < 2; cowork++) {
         setenv("DS4UI_RUNTIME_NAME", cowork ? "cowork" : "agent", 1);
+#ifdef DSTUDIO_TEST_LAGUNA
+        emit_prompt(cowork ? "cowork-laguna" : "agent-laguna", agent_build_laguna_tools_prompt());
+        emit_prompt(cowork ? "cowork-dsml" : "agent-dsml", agent_build_dsml_tools_prompt());
+#else
         for (int glm = 0; glm < 2; glm++) for (int vision = 0; vision < 2; vision++) {
             char id[64];
             snprintf(id, sizeof id, "%s-%s-%d", cowork ? "cowork" : "agent", glm ? "glm" : "dsml", vision);
@@ -26,6 +30,7 @@ int main(void) {
                        : agent_build_dsml_tools_prompt(false, vision));
             emit_prompt(id, prompt);
         }
+#endif
         agent_config cfg = {0};
         emit_prompt(cowork ? "remote-cowork" : "remote-agent", ds4ui_remote_system_prompt(&cfg));
     }
